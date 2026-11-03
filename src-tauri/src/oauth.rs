@@ -1,0 +1,159 @@
+//! Browser login for SAP BTP ABAP Environment using the instance's service key.
+//! Authorization-code flow: open the UAA login page, catch the redirect on localhost,
+//! exchange the code for a token. The service key JSON is stored in the keychain.
+
+use serde::Deserialize;
+use std::time::{Duration, Instant};
+use tauri_plugin_opener::OpenerExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
+
+#[derive(Deserialize)]
+struct ServiceKey {
+    uaa: Uaa,
+}
+#[derive(Deserialize)]
+struct Uaa {
+    url: String,
+    clientid: String,
+    clientsecret: String,
+}
+#[derive(Deserialize)]
+struct TokenResp {
+    access_token: String,
+    refresh_token: Option<String>,
+    expires_in: Option<u64>,
+}
+
+pub struct Token {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    expires: Instant,
+}
+impl Token {
+    pub fn expired(&self) -> bool {
+        Instant::now() + Duration::from_secs(30) >= self.expires
+    }
+}
+
+fn parse_key(key: &str) -> Result<Uaa, String> {
+    serde_json::from_str::<ServiceKey>(key)
+        .map(|k| k.uaa)
+        .map_err(|e| format!("The saved service key is not valid JSON with a uaa section: {e}"))
+}
+
+async fn token(uaa: &Uaa, form: &[(&str, &str)]) -> Result<Token, String> {
+    let res = reqwest::Client::new()
+        .post(format!("{}/oauth/token", uaa.url.trim_end_matches('/')))
+        .basic_auth(&uaa.clientid, Some(&uaa.clientsecret))
+        .form(form)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.status().is_success() {
+        return Err(format!("Token request failed: HTTP {}", res.status()));
+    }
+    let t: TokenResp = res.json().await.map_err(|e| e.to_string())?;
+    Ok(Token {
+        access_token: t.access_token,
+        refresh_token: t.refresh_token,
+        expires: Instant::now() + Duration::from_secs(t.expires_in.unwrap_or(3600)),
+    })
+}
+
+pub async fn refresh(key: &str, refresh_token: &str) -> Result<Token, String> {
+    let uaa = parse_key(key)?;
+    token(
+        &uaa,
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+        ],
+    )
+    .await
+}
+
+pub async fn login(app: &tauri::AppHandle, key: &str) -> Result<Token, String> {
+    let uaa = parse_key(key)?;
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| e.to_string())?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    let redirect = format!("http://localhost:{port}/adt/redirect");
+    let auth_url = format!(
+        "{}/oauth/authorize?response_type=code&client_id={}&redirect_uri={}",
+        uaa.url.trim_end_matches('/'),
+        urlencode(&uaa.clientid),
+        urlencode(&redirect)
+    );
+    app.opener()
+        .open_url(auth_url, None::<&str>)
+        .map_err(|e| e.to_string())?;
+
+    let code = tokio::time::timeout(Duration::from_secs(300), wait_for_code(&listener))
+        .await
+        .map_err(|_| "Login timed out after 5 minutes".to_string())??;
+
+    token(
+        &uaa,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", &redirect),
+        ],
+    )
+    .await
+}
+
+async fn wait_for_code(listener: &TcpListener) -> Result<String, String> {
+    loop {
+        let (mut sock, _) = listener.accept().await.map_err(|e| e.to_string())?;
+        let mut buf = vec![0u8; 8192];
+        let n = sock.read(&mut buf).await.map_err(|e| e.to_string())?;
+        let head = String::from_utf8_lossy(&buf[..n]).to_string();
+        let target = head
+            .lines()
+            .next()
+            .unwrap_or("")
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or("")
+            .to_string();
+        if !target.starts_with("/adt/redirect") {
+            let _ = sock
+                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                .await;
+            continue;
+        }
+        let code = target
+            .split_once('?')
+            .map(|(_, q)| q)
+            .unwrap_or("")
+            .split('&')
+            .find_map(|kv| kv.strip_prefix("code="))
+            .map(|s| s.to_string());
+        let page = if code.is_some() {
+            "<h3>Nusa ADT is logged in. You can close this tab.</h3>"
+        } else {
+            "<h3>Login was not completed. Return to Nusa ADT and try again.</h3>"
+        };
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            page.len(),
+            page
+        );
+        let _ = sock.write_all(resp.as_bytes()).await;
+        return code.ok_or_else(|| "Login was cancelled".to_string());
+    }
+}
+
+fn urlencode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}

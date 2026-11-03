@@ -1,0 +1,40 @@
+const P: Record<string, string> = {
+  files: '<path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5"/>',
+  search: '<circle cx="11" cy="11" r="6"/><path d="m20 20-4.3-4.3"/>',
+  transport: '<path d="M3 7.5 12 3l9 4.5-9 4.5z"/><path d="M3 7.5v9L12 21l9-4.5v-9"/><path d="M12 12v9"/>',
+  bug: '<path d="M8 10a4 4 0 0 1 8 0v4a4 4 0 0 1-8 0z"/><path d="M12 10v8M4 13h4M16 13h4M5 7l3 2.2M19 7l-3 2.2M5 19l3-2M19 19l-3-2M9.5 5.5 8 4M14.5 5.5 16 4"/>',
+  server: '<rect x="4" y="4" width="16" height="6" rx="1.5"/><rect x="4" y="14" width="16" height="6" rx="1.5"/><path d="M8 7h.01M8 17h.01"/>',
+  save: '<path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/>',
+  check: '<path d="M4 7h10M4 12h7M4 17h5"/><path d="m13 16 3 3 5-6"/>',
+  bolt: '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
+  format: '<path d="M4 6h16M8 10h12M8 14h9M4 18h16"/>',
+  play: '<path d="M7 4.5v15l12.5-7.5z"/>',
+  flask: '<path d="M9 3h6M10 3v6L5 19a1 1 0 0 0 .9 1.5h12.2A1 1 0 0 0 19 19l-5-10V3"/><path d="M7.5 14h9"/>',
+  shield: '<path d="M12 3 5 6v6c0 4 3 7.5 7 9 4-1.5 7-5 7-9V6z"/><path d="m9 12 2 2 4-4"/>',
+  chev: '<path d="m9 6 6 6-6 6"/>',
+  close: '<path d="M6 6l12 12M18 6 6 18"/>',
+  lock: '<rect x="5" y="11" width="14" height="9" rx="1.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  refresh: '<path d="M20 11a8 8 0 0 0-14.6-4.5M4 13a8 8 0 0 0 14.6 4.5"/><path d="M5 3v4h4M19 21v-4h-4"/>',
+  collapse: '<path d="M4 6h16M4 12h10M4 18h6"/>',
+  cont: '<path d="M6 5v14"/><path d="M10 5v14l10-7z"/>',
+  over: '<path d="M4 13a8 8 0 0 1 15-4"/><path d="M19 4v5h-5"/><circle cx="12" cy="18.5" r="1.8"/>',
+  into: '<path d="M12 3v10M7.5 9 12 13.5 16.5 9"/><circle cx="12" cy="19" r="1.8"/>',
+  ret: '<path d="M12 14V4M7.5 8.5 12 4l4.5 4.5"/><circle cx="12" cy="19" r="1.8"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="1.5"/>',
+  error: '<circle cx="12" cy="12" r="8.5"/><path d="M9 9l6 6M15 9l-6 6"/>',
+  warning: '<path d="M12 4 2.8 19.5h18.4z"/><path d="M12 10v4.5M12 17.2h.01"/>',
+  info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 8h.01"/>',
+  ok: '<circle cx="12" cy="12" r="8.5"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/>',
+  menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+  panel: '<rect x="3.5" y="4.5" width="17" height="15" rx="1.5"/><path d="M3.5 14.5h17"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6 6 6M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/>',
+  moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
+  monitor: '<rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/>',
+  link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+};
+
+export const ic = (name: string, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true">${P[name] || ''}</svg>`;
+
+/** Kawung motif: four ovals around a point, the app's mark. */
+export const LOGO = `<svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><g fill="currentColor"><ellipse cx="12" cy="6.2" rx="3.3" ry="5" /><ellipse cx="12" cy="17.8" rx="3.3" ry="5"/><ellipse cx="6.2" cy="12" rx="5" ry="3.3"/><ellipse cx="17.8" cy="12" rx="5" ry="3.3"/></g><circle cx="12" cy="12" r="1.5" fill="var(--chrome)"/></svg>`;

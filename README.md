@@ -36,13 +36,14 @@ Nusa Studio uses the same ADT services as Eclipse, so nothing changes on the SAP
 | Lost work | Unsaved editors are gone after a crash | Unsaved changes come back as a draft; every save goes into local history |
 | Compare | Compare With menu and History view | Compare tab with only the changed lines, one click to restore |
 | Editing | Eclipse keys | Eclipse keys plus command palette, multi-cursor (Ctrl+D), move and copy lines |
+| Refactoring | Quick fix, rename, extract method | The same services: `Ctrl+1`, `Alt+Shift+R`, `Alt+Shift+M`, with a before/after preview of every change |
 | Extras | Separate plugins (ABAP Cleaner, abapGit) | Data preview, SQL console, ABAP Cleaner (also on save), RAP generator, abapGit built in |
 | When a connection fails | Error dialog, details in the Error Log view | What went wrong, what to do, and diagnostics to copy |
 | Footprint | Java runtime | System web view, small installer |
 
 New users see a short *Coming from Eclipse ADT* guide; it is also in the command palette.
 
-Where Eclipse ADT is still ahead: the debugger, refactorings such as rename and extract method, function groups and modules, and the specialised editors of some object types (Nusa Studio shows authorization objects, IAM apps, communication scenarios and similar objects in a generic form). Nusa Studio is a preview and has not been verified against a live system yet (see [Status](#status)), so keep Eclipse at hand for those.
+Where Eclipse ADT is still ahead: a debugger tested on many releases (watchpoints, conditional breakpoints, AMDP), the profiler, function groups and modules, and the specialised editors of some object types (Nusa Studio shows authorization objects, IAM apps, communication scenarios and similar objects in a generic form). Nusa Studio is a preview (see [Status](#status)), so keep Eclipse at hand for those.
 
 ## Features
 
@@ -50,6 +51,8 @@ Where Eclipse ADT is still ahead: the debugger, refactorings such as rename and 
 - ABAP and CDS highlighting, line numbers, bracket matching, comment toggle
 - Code completion that understands context: members of inferred types, DDIC fields, SQL clauses, call parameters, function module patterns, CDS annotations and more ([full list](#code-completion))
 - Go to definition (F3), element info (F2), ABAP keyword documentation (F1), where-used list
+- **Quick fix** (`Ctrl+1`, also `Ctrl+.`): the system's own proposals, such as declaring a variable or method or creating its implementation
+- **Rename** (`Alt+Shift+R`) and **Extract Method** (`Alt+Shift+M`) through the ADT refactoring services, also across objects; every change is shown before and after, then the objects are inactive until you activate them
 - **Format Document** (`Shift+Alt+F` or `Shift+F1`): block indentation, aligned method parameters and chained declarations, keyword case of your choice; CDS sources are indented by braces. It runs offline and only changes whitespace and keyword case; the system's pretty printer is still available in Settings
 - **Preview tabs** like VS Code: a single click opens a temporary tab that the next click replaces; editing or double-clicking keeps it
 - Outline of classes, methods, attributes and CDS elements
@@ -79,7 +82,8 @@ Where Eclipse ADT is still ahead: the debugger, refactorings such as rename and 
 - ABAP Unit with pass/fail per method and jump to the failing line
 - ATC findings grouped by priority
 - Run console classes (`IF_OO_ADT_CLASSRUN`) and, on the local runner, reports
-- Debugger with breakpoints, step into/over/return, variables and call stack (experimental on SAP systems)
+- Debugger with breakpoints, step into/over/return, run to line (`Ctrl+R`), variables grouped like Eclipse (tables show their rows, structures and objects open on demand), changing values, and switching stack frames
+- **Wait for any process**: like the Eclipse debugger, stop in code that runs elsewhere, such as a RAP behavior called by a Fiori app, an OData request, or a report started in SAP GUI
 
 **Built-in extensions** (switch each on or off in the Extensions view)
 - **Data Preview & SQL Console**: F8 on a table or CDS view shows its rows; run ABAP SQL with `Ctrl+Enter`
@@ -171,6 +175,16 @@ The builds are not code-signed yet:
 - **Linux**: `chmod +x Nusa-Studio-*.AppImage` and run it.
 
 To build everything yourself, open **Actions → Build desktop app → Run workflow**. A quick `rust` job compiles and tests the Rust core first, so a compile error shows up within minutes. A draft release with all files appears after 15–25 minutes. The same files are also attached to the workflow run under **Artifacts**, together with `Cargo.lock`; commit that file to `src-tauri/` so later builds use the same crate versions.
+
+### In-app updates
+
+Every build checks the latest **published** GitHub release once a day (Settings → Updates; drafts do not count, so publish the draft the workflow makes) and offers the download. Installed builds can also install the update themselves and restart, once the release workflow can sign updates. To set that up once:
+
+1. On a computer with Node.js, run `npx @tauri-apps/cli signer generate -w nusa-updater.key` and choose a password. It writes `nusa-updater.key` (private) and `nusa-updater.key.pub` (public).
+2. In the repository, **Settings → Secrets and variables → Actions → New repository secret**, add three secrets: `TAURI_SIGNING_PRIVATE_KEY` (the content of `nusa-updater.key`), `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (the password) and `TAURI_UPDATER_PUBKEY` (the content of `nusa-updater.key.pub`).
+3. Keep `nusa-updater.key` somewhere safe and never commit it: whoever has it can sign updates. If it is lost, later versions have to be installed by hand once.
+
+From the next build on, releases contain `latest.json` and the signatures, and *Install and restart* appears. The portable files are always replaced by hand.
 
 ## Connect to SAP
 
@@ -283,6 +297,8 @@ Other scripts:
 | Move line | `Alt+↑` / `Alt+↓` | Copy line | `Shift+Alt+↓` |
 | Toggle breakpoint | `Ctrl+Shift+B` | Dark mode on/off | `Ctrl+Alt+D` |
 | Step into / over / return | `F5` / `F6` / `F7` | Resume / stop debugging | `F8` / `Shift+F5` |
+| Quick fix | `Ctrl+1` / `Ctrl+.` | Run to line | `Ctrl+R` |
+| Rename | `Alt+Shift+R` | Extract method | `Alt+Shift+M` |
 | Side bar | `Ctrl+B` | Panel | `Ctrl+J` |
 
 ## Code completion
@@ -332,14 +348,15 @@ Nusa Studio is a preview. What has been verified so far:
 
 | Area | Status |
 |---|---|
-| Workbench UI end to end (DEMO system, real editor) | 30 scenarios, including adding an on-premise system over RFC with a SAProuter route, including the IAM app layout, the data element and domain forms with value help, preview tabs, collapse all, Format Document, the IAM app form and creating a communication scenario; edit, save, activate, completion while typing, packages, new objects, service binding publish, data preview, RAP generator, ABAP Cleaner, abapGit, compare and local history, draft recovery, multi-cursor and line editing, systems, themes, phone width |
+| Workbench UI end to end (DEMO system, real editor) | 33 scenarios, including quick fix, rename and extract method with their preview, changing and deleting transport requests, the debugger's grouped variables, stack frames and value changes, adding an on-premise system over RFC with a SAProuter route, the IAM app layout, the data element and domain forms with value help, preview tabs, collapse all, Format Document, the IAM app form and creating a communication scenario; edit, save, activate, completion while typing, packages, new objects, service binding publish, data preview, RAP generator, ABAP Cleaner, abapGit, compare and local history, draft recovery, multi-cursor and line editing, systems, themes, phone width |
 | Desktop shell against an in-memory ADT server | tested: title bar, error pages, save with transport, activate, session restore |
-| ABAP analysis, formatter, cleaner, RAP generator, diff, object types, completion contexts | 66 unit tests; the formatter is checked to keep every token of the sample sources |
+| ABAP analysis, formatter, cleaner, RAP generator, diff, object types, completion contexts, refactoring and debugger payloads | 75 unit tests; the formatter is checked to keep every token of the sample sources |
 | ADT response parsing and edit cycle | tested against recorded payload shapes and an in-memory ADT server |
 | Rust core | compiled and unit-tested by the `rust` job of the workflow before the installers are built |
 | S/4HANA Cloud Public Edition | first checks on a live system: browser logon, package explorer with all object families, class and CDS editing, data element, domain and IAM app forms, service binding and data preview work. Package creation, publishing and abapGit are not checked yet |
 | Other live systems | on-premise S/4HANA and BTP ABAP are not checked yet |
-| RFC through SAProuter | checked against a stand-in for the RFC SDK (logon errors, long values, large bodies); not yet against a real SAP system |
+| RFC through SAProuter | logon through a SAProuter checked on a live system (SAP ECC 6.0, which has no ADT, so no further); the ADT calls over RFC are checked against a stand-in for the RFC SDK |
+| Quick fix, rename, extract method, debugger, transport delete and description | follow the ADT protocol as Eclipse uses it and are tested against an in-memory ADT server; not yet on a live system. Changing a transport description uses the request document; older releases may refuse it |
 | Form-based objects on a live system | not tested yet. They are read and saved as the XML document the system returns. New ones are created by copying the format of an existing object of the same type in that system, so the first object of a type the system has never seen still needs Eclipse |
 | Browser logon | redirect to `http://localhost:<port>/adt/redirect`; BTP OAuth needs it allowed by the UAA |
 
@@ -350,7 +367,9 @@ Found something that does not work with your system? Open an issue with the erro
 - [ ] First verified run against S/4HANA, S/4HANA Cloud and BTP
 - [ ] Code signing for Windows and macOS installers
 - [ ] CDS formatter and server-side DDL completion
-- [ ] Rename and extract-method refactoring
+- [x] Quick fix, rename and extract-method refactoring
+- [x] Debugger: wait for any process, run to line, change values
+- [x] Update check and signed in-app updates
 - [x] RAP generator (views, behavior definitions, service binding)
 - [x] abapGit pull and link
 - [ ] abapGit push and staging

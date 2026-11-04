@@ -79,6 +79,10 @@ impl Connection {
 /// Portable mode: when the executable's name contains "portable" (or a `portable.txt`
 /// file sits next to it), settings live in `nusa-adt-data` beside the executable
 /// instead of the user profile, so the app can run from a USB stick or Downloads.
+pub fn is_portable() -> bool {
+    portable_dir().is_some()
+}
+
 fn portable_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;

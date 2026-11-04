@@ -2,12 +2,14 @@
 // local ABAP runner (which serves a subset of the same ADT endpoints, see docs/RUNNER-PROTOCOL.md).
 
 import { AdtClient, AdtError, HttpTransport, sourceUrl, splitSourceUrl } from '../adt/client';
-import { AdtDebugger } from '../adt/debugger';
+import { AdtDebugger, StackFrame } from '../adt/debugger';
+import * as R from '../adt/refactor';
 import { KWSET, prettyPrint as localPretty } from '../core/abap';
 import { completeAbap, completeCds } from '../core/complete';
 import { RemoteCatalog } from '../adt/catalog';
 import {
-  AtcFinding, Backend, BindingInfo, Breakpoint, Connection, CreateExtra, DebugState, GitRepo, Hit, Include, isCdsLike, Location,
+  AtcFinding, Backend, BindingInfo, Breakpoint, Connection, CreateExtra, DebugFrame, DebugState, DebugVar, ExtractStart, GitRepo, QuickFix,
+  RefactorPreview, RenameStart, TextEdit, Hit, Include, isCdsLike, Location,
   NewPackage, ObjRef, ObjState, ObjType, PkgRef, PreviewResult, Problem, Proposal, RunResult, StepKind, SystemInfo, Transport,
   TransportNeed, TYPE_INFO, isSourceType, UnitResult, ValueHelpItem,
 } from '../core/types';
@@ -28,7 +30,7 @@ export class AdtBackend implements Backend {
   private transportOf = new Map<string, string>();       // conn|uri -> request
   private trCache = new Map<string, Transport[]>();
   private inactive = new Map<string, Set<string>>();     // conn -> uris
-  private dbg: { conn: string; d: AdtDebugger; run?: Promise<string>; obj: ObjRef } | null = null;
+  private dbg: { conn: string; d: AdtDebugger; run?: Promise<string>; obj?: ObjRef } | null = null;
 
   constructor(private http: HttpTransport, private store: ConnStore) {}
 
@@ -346,44 +348,174 @@ export class AdtBackend implements Backend {
     throw new Error(`${obj.name} cannot be executed`);
   }
 
-  // ------------------------------------------------------------------ debugger (experimental)
+  // ------------------------------------------------------------------ quick fixes and refactorings
+  async quickFixes(conn: string, obj: ObjRef, include: Include, source: string, line: number, col: number): Promise<QuickFix[]> {
+    if (!isSourceType(obj.type)) return [];
+    return R.quickFixes(this.c(conn), sourceUrl(obj.uri, include), source, line, col);
+  }
+  async applyQuickFix(conn: string, obj: ObjRef, include: Include, source: string, line: number, col: number, fix: QuickFix): Promise<TextEdit[]> {
+    return R.applyQuickFix(this.c(conn), sourceUrl(obj.uri, include), source, line, col, JSON.parse(fix.token));
+  }
+  async renameStart(conn: string, obj: ObjRef, include: Include, line: number, from: number, to: number): Promise<RenameStart> {
+    return R.renameEvaluate(this.c(conn), sourceUrl(obj.uri, include), line, from, to);
+  }
+  async renamePreview(conn: string, start: RenameStart, newName: string, transport?: string): Promise<RefactorPreview> {
+    return R.renamePreview(this.c(conn), start.token, newName, transport);
+  }
+  async extractStart(conn: string, obj: ObjRef, include: Include, from: { line: number; ch: number }, to: { line: number; ch: number }): Promise<ExtractStart> {
+    return R.extractEvaluate(this.c(conn), sourceUrl(obj.uri, include), from, to);
+  }
+  async extractPreview(conn: string, start: ExtractStart, transport?: string): Promise<RefactorPreview> {
+    return R.extractPreview(this.c(conn), start, transport);
+  }
+  async refactorExecute(conn: string, preview: RefactorPreview): Promise<void> {
+    await R.execute(this.c(conn), preview);
+    const set = this.inactive.get(conn);
+    for (const o of preview.objects) set?.add(o.uri);
+  }
+  async deleteTransport(conn: string, id: string): Promise<void> {
+    await this.c(conn).deleteTransport(id);
+    this.trCache.delete(conn);
+  }
+  async changeTransportDesc(conn: string, id: string, desc: string): Promise<void> {
+    await this.c(conn).changeTransportDesc(id, desc);
+    this.trCache.delete(conn);
+  }
+
+  // ------------------------------------------------------------------ debugger
+  private dbgFrames: DebugFrame[] = [];
+  private dbgFrameRaw: StackFrame[] = [];
+  private dbgVars = new Map<string, DebugVar>();
+  private dbgNote = '';
+  private listening: { cancelled: boolean } | null = null;
+
+  private bpUrls(bps: Breakpoint[]) { return bps.map(b => ({ sourceUrl: sourceUrl(b.uri, b.include), line: b.line })); }
+
+  /** Sets the breakpoints; lines the system refuses are reported, all refused is an error. */
+  private async syncBreakpoints(d: AdtDebugger, bps: Breakpoint[]) {
+    const res = await d.setBreakpoints(this.bpUrls(bps));
+    const bad = res.filter(r => r.error);
+    this.dbgNote = bad.length ? `${bad.length} breakpoint${bad.length > 1 ? 's' : ''} could not be set: ${bad[0].error} (line ${bad[0].line + 1})` : '';
+    if (res.length && bad.length === res.length) throw new Error(`No breakpoint could be set: ${bad[0].error}`);
+  }
+
   async debugStart(conn: string, obj: ObjRef, bps: Breakpoint[]): Promise<DebugState | null> {
+    await this.debugStop();
     const d = new AdtDebugger(this.c(conn), this.userOf(conn));
-    await d.setBreakpoints(bps.map(b => ({ sourceUrl: sourceUrl(b.uri, b.include), line: b.line })));
+    await this.syncBreakpoints(d, bps);
     this.dbg = { conn, d, obj };
-    const listening = d.listen(90000);
-    if (obj.type === 'CLAS') this.dbg.run = this.c(conn).classRun(obj.name).catch(e => String(e));
-    const hit = await listening;
-    if (!hit) { await d.stop(); this.dbg = null; return null; }
+    const listening = d.listen();
+    if (obj.type !== 'CLAS') {
+      // reports start from SAP GUI; the listener waits for them like Eclipse does
+      return this.waitFor(conn, d, listening);
+    }
+    await new Promise(r => setTimeout(r, 400));           // listener first, then the run that may stop
+    const run = this.c(conn).classRun(obj.name).then(out => ({ out }), e => ({ out: `Error: ${e instanceof Error ? e.message : String(e)}` }));
+    this.dbg.run = run.then(r => r.out);
+    const first = await Promise.race([listening.then(hit => ({ hit })), run]);
+    if ('out' in first) {                                 // finished without stopping
+      await d.stopListening(); await listening.catch(() => false);
+      await d.clearBreakpoints();
+      this.dbg = null;
+      return { done: true, frames: [], vars: [], outputSoFar: first.out, note: 'No breakpoint was reached.' };
+    }
+    if (!first.hit) { await this.debugStop(); return null; }
     await d.attach();
     return this.view();
   }
 
-  async debugStep(kind: StepKind): Promise<DebugState> {
-    if (!this.dbg) return { done: true, frames: [], vars: [], outputSoFar: '' };
+  async debugListen(conn: string, bps: Breakpoint[]): Promise<DebugState | null> {
+    await this.debugStop();
+    const d = new AdtDebugger(this.c(conn), this.userOf(conn));
+    await this.syncBreakpoints(d, bps);
+    this.dbg = { conn, d };
+    return this.waitFor(conn, d, d.listen());
+  }
+
+  /** Keeps a listener open until a process stops or the user cancels. */
+  private async waitFor(conn: string, d: AdtDebugger, first: Promise<boolean>): Promise<DebugState | null> {
+    const token = { cancelled: false };
+    this.listening = token;
+    let next = first;
+    while (!token.cancelled) {
+      let hit = false;
+      try { hit = await next; } catch (e) {
+        if (token.cancelled) break;
+        if (!/timed? ?out|timeout|aborted/i.test(String((e as Error).message))) { this.listening = null; await this.debugStop(); throw e; }
+      }
+      if (token.cancelled) break;
+      if (hit) {
+        this.listening = null;
+        await d.attach();
+        return this.view();
+      }
+      next = d.listen();                                  // listener expired: listen again
+    }
+    if (this.listening === token) this.listening = null;
+    return null;
+  }
+
+  async debugStep(kind: StepKind, bps: Breakpoint[], target?: Breakpoint): Promise<DebugState> {
+    const s = this.dbg;
+    if (!s) return { done: true, frames: [], vars: [], outputSoFar: '' };
+    await this.syncBreakpoints(s.d, bps).catch(() => undefined);
     const map = { into: 'stepInto', over: 'stepOver', return: 'stepReturn', continue: 'stepContinue' } as const;
-    const r = await this.dbg.d.step(map[kind]);
+    const r = target
+      ? await s.d.step('stepRunToLine', `${sourceUrl(target.uri, target.include)}#start=${target.line + 1}`)
+      : await s.d.step(map[kind]);
     if (r.ended) return this.finish();
     try { return await this.view(); } catch { return this.finish(); }
   }
 
-  async debugStop() { if (this.dbg) { await this.dbg.d.stop(); this.dbg = null; } }
+  async debugChildren(id: string): Promise<DebugVar[]> {
+    const s = this.dbg;
+    const v = this.dbgVars.get(id);
+    if (!s || !v) return [];
+    const kids = await s.d.expand(v);
+    for (const k of kids) if (k.id) this.dbgVars.set(k.id, k);
+    return kids;
+  }
 
-  private async view(): Promise<DebugState> {
+  async debugFrame(index: number): Promise<DebugState> {
+    const s = this.dbg;
+    const f = this.dbgFrameRaw[index];
+    if (!s || !f) return this.view();
+    await s.d.gotoFrame(f);
+    return this.view(index, false);
+  }
+
+  async debugSetValue(name: string, value: string): Promise<DebugState> {
+    const s = this.dbg;
+    if (!s) throw new Error('The debugger is not running');
+    await s.d.setValue(name, value);
+    return this.view();
+  }
+
+  async debugStop() {
+    if (this.listening) this.listening.cancelled = true;
+    const s = this.dbg;
+    this.dbg = null;
+    if (s) { await s.d.stop(); await s.d.clearBreakpoints(); }
+    this.dbgVars.clear();
+  }
+
+  private async view(frame = 0, reloadStack = true): Promise<DebugState> {
     const d = this.dbg as NonNullable<AdtBackend['dbg']>;
-    const frames = await d.d.stack();
-    if (!frames.length) return this.finish();
-    const vars = await d.d.variables().catch(() => []);
-    return {
-      done: false, vars, outputSoFar: '',
-      frames: frames.map(f => { const s = splitSourceUrl(f.uri); return { name: f.name, uri: s.uri, include: s.include, line: f.line }; }),
-    };
+    if (reloadStack) {
+      this.dbgFrameRaw = await d.d.stack();
+      this.dbgFrames = this.dbgFrameRaw.map(f => { const s = splitSourceUrl(f.uri); return { name: f.name, uri: s.uri, include: s.include, line: f.line }; });
+    }
+    if (!this.dbgFrames.length) return this.finish();
+    const vars = await d.d.variables().catch(() => [] as DebugVar[]);
+    this.dbgVars.clear();
+    const index = (vs: DebugVar[]) => vs.forEach(v => { if (v.id) this.dbgVars.set(v.id, v); if (v.children) index(v.children); });
+    index(vars);
+    return { done: false, vars, outputSoFar: '', frames: this.dbgFrames, frame, note: this.dbgNote || undefined };
   }
 
   private async finish(): Promise<DebugState> {
     const out = this.dbg?.run ? await this.dbg.run : '';
-    if (this.dbg) await this.dbg.d.stop();
-    this.dbg = null;
+    await this.debugStop();
     return { done: true, frames: [], vars: [], outputSoFar: out };
   }
 }

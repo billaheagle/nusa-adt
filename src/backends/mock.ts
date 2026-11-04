@@ -3,13 +3,15 @@
 // versions, locks, transports, activation with syntax errors, ABAP Unit, ATC and a
 // scripted debugger session for the sample program.
 
-import { analyze, declaredMethods, implementedMethods, lineOf, prettyPrint, statements } from '../core/abap';
+import { analyze, declaredMethods, implementedMethods, KWSET as KW, lineOf, prettyPrint, statements } from '../core/abap';
+import { applyEdits, offsetOf, wordRange } from '../core/edits';
+import { extractMethodEdits, LocalEdit, quickFixesAt, renameEdits } from '../core/localrefactor';
 import { Catalog, StdCatalog, WorkspaceCatalog } from '../core/catalog';
 import { demoDoma, demoDtel, demoSia6, demoXml, template } from '../core/templates';
 import { completeAbap, completeCds } from '../core/complete';
 import {
-  AtcFinding, Backend, BindingInfo, Breakpoint, Connection, CreateExtra, DebugState, DebugVar, GitRepo, Hit, Include, isCdsLike, Location,
-  NewPackage, ObjRef, ObjState, ObjType, PkgRef, PreviewResult, Problem, Proposal, RunResult, StepKind, SystemInfo, Transport,
+  AtcFinding, Backend, BindingInfo, Breakpoint, Connection, CreateExtra, DebugState, DebugVar, ExtractStart, GitRepo, Hit, Include, isCdsLike, Location,
+  NewPackage, ObjRef, ObjState, ObjType, PkgRef, PreviewResult, Problem, Proposal, QuickFix, RefactorPreview, RenameStart, RunResult, StepKind, SystemInfo, TextEdit, Transport,
   TransportNeed, TYPE_INFO, UnitResult, uriFor, ValueHelpItem,
 } from '../core/types';
 
@@ -897,6 +899,109 @@ export class MockBackend implements Backend {
     throw new Error(`${o.ref.name} cannot be executed`);
   }
 
+  // ---------------------------------------------------------------- quick fixes and refactorings (computed locally)
+
+  private clsOf(o: MObj) { return o.ref.type === 'CLAS' ? o.ref.name : null; }
+
+  async quickFixes(conn: string, obj: ObjRef, include: Include, source: string, line: number, col: number): Promise<QuickFix[]> {
+    await wait(60);
+    const o = this.get(conn, obj.uri);
+    if (TYPE_INFO[o.ref.type].editor !== 'abap') return [];
+    return quickFixesAt(source, include === 'main' ? this.clsOf(o) : null, line, col).map(f => ({ title: f.title, desc: f.desc, token: JSON.stringify(f.edits) }));
+  }
+
+  async applyQuickFix(conn: string, obj: ObjRef, include: Include, _source: string, _line: number, _col: number, fix: QuickFix): Promise<TextEdit[]> {
+    await wait(60);
+    const o = this.get(conn, obj.uri);
+    return (JSON.parse(fix.token) as LocalEdit[]).map(e => ({ ...e, uri: o.ref.uri, include, name: o.ref.name, type: o.ref.type, oldText: '' }));
+  }
+
+  async renameStart(conn: string, obj: ObjRef, include: Include, line: number, from: number, to: number): Promise<RenameStart> {
+    await wait(60);
+    const o = this.get(conn, obj.uri);
+    const text = (o.saved[include] ?? '').split('\n')[line] ?? '';
+    const r = wordRange(text, from) ?? [from, to];
+    const oldName = text.slice(r[0], Math.max(r[1], to));
+    if (!/^[\w/~]+$/.test(oldName) || KW.has(oldName.toUpperCase())) throw new Error('Place the cursor on a name to rename it');
+    return { oldName, token: JSON.stringify({ uri: o.ref.uri, oldName }) };
+  }
+
+  private preview(conn: string, title: string, perInclude: { o: MObj; include: Include; edits: LocalEdit[] }[], transport?: string): RefactorPreview {
+    const edits: TextEdit[] = [];
+    for (const p of perInclude) {
+      const src = p.o.saved[p.include] ?? '';
+      for (const e of p.edits) edits.push({ ...e, uri: p.o.ref.uri, include: p.include, name: p.o.ref.name, type: p.o.ref.type, oldText: src.slice(offsetOf(src, e.from), offsetOf(src, e.to)) });
+    }
+    const objects = [...new Map(perInclude.map(p => [p.o.ref.uri, { ...p.o.ref }])).values()];
+    return { title, edits, objects, token: JSON.stringify({ conn, transport }) };
+  }
+
+  async renamePreview(conn: string, start: RenameStart, newName: string, transport?: string): Promise<RefactorPreview> {
+    await wait(120);
+    const { uri, oldName } = JSON.parse(start.token) as { uri: string; oldName: string };
+    if (!/^[A-Za-z_/][\w/]*$/.test(newName)) throw new Error(`${newName} is not a valid ABAP name`);
+    if (newName.toLowerCase() === oldName.toLowerCase()) throw new Error('The new name is the same as the old one');
+    const o = this.get(conn, uri);
+    const parts = this.includesOf(o.ref.type).map(include => ({ o, include, edits: renameEdits(o.saved[include] ?? '', oldName, newName) })).filter(p => p.edits.length);
+    if (!parts.length) throw new Error(`${oldName} is not used in ${o.ref.name}`);
+    return this.preview(conn, `Rename ${oldName} to ${newName}`, parts, transport);
+  }
+
+  async extractStart(conn: string, obj: ObjRef, include: Include, from: { line: number; ch: number }, to: { line: number; ch: number }): Promise<ExtractStart> {
+    await wait(60);
+    const o = this.get(conn, obj.uri);
+    if (o.ref.type !== 'CLAS' || include !== 'main') throw new Error('Extract Method works in the global class here. Select statements inside a method.');
+    const last = to.ch === 0 && to.line > from.line ? to.line - 1 : to.line;
+    extractMethodEdits(o.saved.main ?? '', o.ref.name, from.line, last, 'new_method');   // validates the selection
+    return { name: 'new_method', visibility: 'PRIVATE', isStatic: false, className: o.ref.name, params: [], token: JSON.stringify({ uri: o.ref.uri, from: from.line, to: last }) };
+  }
+
+  async extractPreview(conn: string, start: ExtractStart, transport?: string): Promise<RefactorPreview> {
+    await wait(120);
+    const t = JSON.parse(start.token) as { uri: string; from: number; to: number };
+    if (!/^[A-Za-z_][\w]*$/.test(start.name)) throw new Error(`${start.name} is not a valid method name`);
+    const o = this.get(conn, t.uri);
+    const edits = extractMethodEdits(o.saved.main ?? '', o.ref.name, t.from, t.to, start.name.toLowerCase());
+    return this.preview(conn, `Extract method ${start.name.toLowerCase()}`, [{ o, include: 'main', edits }], transport);
+  }
+
+  async refactorExecute(conn: string, p: RefactorPreview): Promise<void> {
+    await wait(200);
+    const { transport } = JSON.parse(p.token) as { transport?: string };
+    for (const ref of p.objects) {
+      const o = this.get(conn, ref.uri);
+      if (o.lock) throw new Error(`${o.ref.name} is locked by an editor with unsaved changes. Save or close it first.`);
+      const need = await this.transportNeed(conn, o.ref);
+      if (need.needed && !transport) throw new Error(`${o.ref.name} must be recorded in a transport request`);
+      this.record(conn, o, transport);
+      for (const include of this.includesOf(o.ref.type)) {
+        const mine = p.edits.filter(e => e.uri === ref.uri && e.include === include);
+        if (mine.length) o.saved[include] = applyEdits(o.saved[include] ?? '', mine);
+      }
+      o.ref.inactive = this.includesOf(o.ref.type).some(i => (o.saved[i] ?? '') !== (o.active[i] ?? ''));
+    }
+    this.persist();
+  }
+
+  async deleteTransport(conn: string, id: string): Promise<void> {
+    await wait(120);
+    const t = this.tr[conn].find(x => x.id === id);
+    if (!t) throw new Error(`Request ${id} not found`);
+    if (t.status !== 'modifiable') throw new Error(`Request ${id} is released and cannot be deleted`);
+    this.tr[conn] = this.tr[conn].filter(x => x !== t);
+    for (const o of this.all(conn)) if (o.ref.transport === id) o.ref.transport = undefined;
+    this.persist();
+  }
+
+  async changeTransportDesc(conn: string, id: string, desc: string): Promise<void> {
+    await wait(80);
+    const t = this.tr[conn].find(x => x.id === id);
+    if (!t) throw new Error(`Request ${id} not found`);
+    if (t.status !== 'modifiable') throw new Error(`Request ${id} is released; its description cannot change`);
+    t.desc = desc;
+    this.persist();
+  }
+
   // ---------------------------------------------------------------- debugger (scripted for the sample program)
 
   async debugStart(conn: string, obj: ObjRef, bps: Breakpoint[]): Promise<DebugState | null> {
@@ -909,8 +1014,21 @@ export class MockBackend implements Backend {
     return this.advance('continue', bps);
   }
 
-  async debugStep(kind: StepKind, bps: Breakpoint[]) { await wait(60); return this.advance(kind, bps); }
+  async debugStep(kind: StepKind, bps: Breakpoint[], target?: Breakpoint) { await wait(60); return this.advance(target ? 'continue' : kind, target ? [...bps, target] : bps); }
   async debugStop() { this.dbg = null; }
+  /** DEMO has no other processes that could reach a breakpoint. */
+  async debugListen(): Promise<DebugState | null> { throw new Error('The DEMO system has no other processes to debug. Press F8 on the sample program instead.'); }
+  async debugChildren(): Promise<DebugVar[]> { return []; }
+  async debugFrame(index: number): Promise<DebugState> { await wait(40); return this.view(index); }
+  async debugSetValue(name: string, value: string): Promise<DebugState> {
+    const st = this.view();
+    const find = (vs: DebugVar[]): DebugVar | undefined => { for (const v of vs) { if (v.name.toUpperCase() === name.toUpperCase() && !v.group) return v; const k = v.children && find(v.children); if (k) return k; } return undefined; };
+    const v = find(st.vars);
+    if (!v) throw new Error(`${name} is not visible here`);
+    if (/Table|Structure|REF TO/i.test(v.type + v.value) && v.children?.length) throw new Error(`${name} is not an elementary variable`);
+    v.value = value;
+    return this.view();
+  }
 
   private advance(kind: StepKind, bps: Breakpoint[]): DebugState {
     const d = this.dbg;
@@ -948,15 +1066,22 @@ export class MockBackend implements Backend {
     }
   }
 
-  private view(): DebugState {
+  private view(frame = 0): DebugState {
     const d = this.dbg as NonNullable<MockBackend['dbg']>;
     const s = d.steps[d.i];
     const progFrame = { name: `${d.prog.name} · START-OF-SELECTION`, uri: d.prog.uri, include: 'main' as Include, line: s.line };
+    // the Variables view groups them like Eclipse: parameters first, then locals
+    const grouped = (vs: DebugVar[]): DebugVar[] => {
+      const isParam = (v: DebugVar) => /^(P_|IV_|EV_|CV_|RV_|ME$)/i.test(v.name);
+      const g = (name: string, list: DebugVar[]): DebugVar => ({ name, type: '', value: '', group: true, expandable: true, children: list });
+      return [g('Parameters', vs.filter(isParam)), g('Locals', vs.filter(v => !isParam(v)))].filter(x => x.children?.length);
+    };
     if (d.inner >= 0 && s.inner) {
       const x = s.inner[d.inner];
-      return { done: false, frames: [{ name: 'ZCL_NUSA_FLIGHT_SERVICE→CALC_LOAD_FACTOR', uri: d.cls.uri, include: 'main', line: x.line }, progFrame], vars: x.vars, outputSoFar: d.out.join('\n') };
+      const frames = [{ name: 'ZCL_NUSA_FLIGHT_SERVICE→CALC_LOAD_FACTOR', uri: d.cls.uri, include: 'main' as Include, line: x.line }, progFrame];
+      return { done: false, frames, frame, vars: grouped(frame === 1 ? s.vars : x.vars), outputSoFar: d.out.join('\n') };
     }
-    return { done: false, frames: [progFrame], vars: s.vars, outputSoFar: d.out.join('\n') };
+    return { done: false, frames: [progFrame], frame: 0, vars: grouped(s.vars), outputSoFar: d.out.join('\n') };
   }
 
   private finish(): DebugState {

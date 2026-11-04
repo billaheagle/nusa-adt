@@ -1,6 +1,6 @@
 {
   "name": "nusa-adt",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Lightweight ABAP development workbench (ADT client) built with Tauri",
   "type": "module",

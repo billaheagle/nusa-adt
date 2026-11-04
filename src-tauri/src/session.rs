@@ -53,7 +53,7 @@ pub struct Session {
     /// Reentrance ticket from the browser logon (MYSAPSSO2), for Auth::Sso.
     sso: Mutex<Option<String>>,
     /// Auth::Rfc: open RFC connections, one for plain requests and one for locks.
-    rfc: [Arc<std::sync::Mutex<Option<rfc::RfcConn>>>; 2],
+    rfc: [Arc<std::sync::Mutex<Option<rfc::RfcConn>>>; 3],
     /// Set after a rejected RFC logon: no further attempts until the system is saved again,
     /// so a wrong password cannot lock the user with a burst of parallel requests.
     rfc_refused: Arc<std::sync::Mutex<Option<String>>>,
@@ -92,6 +92,7 @@ impl Session {
             bearer: Mutex::new(None),
             sso: Mutex::new(None),
             rfc: [
+                Arc::new(std::sync::Mutex::new(None)),
                 Arc::new(std::sync::Mutex::new(None)),
                 Arc::new(std::sync::Mutex::new(None)),
             ],
@@ -261,13 +262,31 @@ impl Session {
         } else {
             &self.stateless
         };
-        let mut ch = chan.lock().await;
         let modifying = req.method != "GET";
-        if modifying && ch.csrf.is_none() && self.conn.kind != Kind::Runner {
-            self.fetch_csrf(&mut ch, req.stateful, app).await?;
+        let mut guard = chan.lock().await;
+        if modifying && guard.csrf.is_none() && self.conn.kind != Kind::Runner {
+            self.fetch_csrf(&mut guard, req.stateful, app).await?;
         }
+        // Stateful requests keep the channel for their whole run: they share one SAP session and
+        // must stay in order (lock, write, unlock; debugger steps). Stateless ones let it go, so
+        // a debugger listener or a slow query does not hold up the rest.
+        let mut snap = Channel {
+            client: guard.client.clone(),
+            csrf: guard.csrf.clone(),
+        };
+        let mut held = if req.stateful {
+            Some(guard)
+        } else {
+            drop(guard);
+            None
+        };
         for attempt in 0..2 {
-            let res = self.send_once(&ch, &req, app).await?;
+            let ticket = if self.conn.auth == Auth::Sso {
+                self.sso.lock().await.clone()
+            } else {
+                None
+            };
+            let res = self.send_once(&snap, &req, app).await?;
             let csrf_required = res.status == 403
                 && res
                     .headers
@@ -275,7 +294,9 @@ impl Session {
                     .map(|v| v.eq_ignore_ascii_case("required"))
                     .unwrap_or(false);
             if csrf_required && attempt == 0 {
-                self.fetch_csrf(&mut ch, req.stateful, app).await?;
+                snap.csrf = self
+                    .refresh_csrf(chan, &mut held, req.stateful, app)
+                    .await?;
                 continue;
             }
             if res.status == 401 && attempt == 0 && self.conn.auth == Auth::Oauth {
@@ -283,17 +304,48 @@ impl Session {
                 continue;
             }
             if res.status == 401 && attempt == 0 && self.conn.auth == Auth::Sso {
-                // ticket or session expired: log on again through the browser
-                *self.sso.lock().await = None;
-                ch.csrf = None;
-                if modifying && self.conn.kind != Kind::Runner {
-                    self.fetch_csrf(&mut ch, req.stateful, app).await?;
+                // ticket or session expired: log on again through the browser, once, even when
+                // several requests notice it at the same time
+                {
+                    let mut t = self.sso.lock().await;
+                    if *t == ticket {
+                        *t = None;
+                    }
                 }
+                snap.csrf = if modifying && self.conn.kind != Kind::Runner {
+                    self.refresh_csrf(chan, &mut held, req.stateful, app)
+                        .await?
+                } else {
+                    None
+                };
                 continue;
             }
             return Ok(res);
         }
         Err("Request failed after retry".into())
+    }
+
+    /// Fetches a new CSRF token into the shared channel and returns it.
+    async fn refresh_csrf(
+        &self,
+        chan: &Mutex<Channel>,
+        held: &mut Option<tokio::sync::MutexGuard<'_, Channel>>,
+        stateful: bool,
+        app: &tauri::AppHandle,
+    ) -> Result<Option<String>, String> {
+        match held.as_mut() {
+            Some(g) => {
+                g.csrf = None;
+                self.fetch_csrf(g, stateful, app).await?;
+                Ok(g.csrf.clone())
+            }
+            None => {
+                let mut g = chan.lock().await;
+                g.csrf = None;
+                self.fetch_csrf(&mut g, stateful, app).await?;
+                Ok(g.csrf.clone())
+            }
+        }
     }
 
     /// ADT over RFC (SADT_REST_RFC_ENDPOINT), like Eclipse for on-premise systems. The
@@ -316,7 +368,16 @@ impl Session {
             saprouter: c.saprouter.clone().unwrap_or_default(),
         };
         let sid = c.sid.clone();
-        let slot = self.rfc[if req.stateful { 1 } else { 0 }].clone();
+        // the debugger listener waits for minutes: it gets its own connection
+        let listener = req.method == "POST" && req.path.ends_with("/debugger/listeners");
+        let slot = self.rfc[if req.stateful {
+            1
+        } else if listener {
+            2
+        } else {
+            0
+        }]
+        .clone();
         let refused = self.rfc_refused.clone();
         // URI with the query string, as the HTTP request line would carry it. Same parsing as the HTTP route, so already-encoded names (%2F namespaces) stay as they are
         let mut url =

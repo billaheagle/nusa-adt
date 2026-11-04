@@ -511,6 +511,96 @@ await step('open subpackages load after a restart instead of staying on "Loading
   await page.waitForFunction(() => ![...document.querySelectorAll('#sideBody .empty')].some(e => /Loading/.test(e.textContent)), null, { timeout: 8000 });
 });
 
+await step('quick fix (Ctrl+1), rename (Alt+Shift+R) and extract method (Alt+Shift+M) like Eclipse', async () => {
+  await page.click('.tab >> text=ZCL_NUSA_FLIGHT_SERVICE');
+  await page.waitForSelector('.tab.on >> text=ZCL_NUSA_FLIGHT_SERVICE');
+  const lineOf = re => page.evaluate(r => document.querySelector('.CodeMirror').CodeMirror.getValue().split('\n').findIndex(x => new RegExp(r).test(x)), re);
+  const sel = await lineOf('INTO TABLE @rt_flights');
+  await page.evaluate(l => { const c = document.querySelector('.CodeMirror').CodeMirror; c.replaceRange('    lv_count = lines( rt_flights ).\n    lv_count = lv_count + 1.\n', { line: l + 1, ch: 0 }); c.setCursor({ line: l + 1, ch: 6 }); c.focus(); }, sel);
+  await page.keyboard.press('Control+1');
+  await page.waitForSelector('#ctx >> text=Declare local variable lv_count');
+  await shot('31-quickfix');
+  await page.click('#ctx >> text=Declare local variable lv_count');
+  await page.waitForFunction(() => /DATA lv_count TYPE string\.\n    lv_count = lines/.test(document.querySelector('.CodeMirror').CodeMirror.getValue()));
+  // rename saves first, then shows every change before the system makes it
+  const use = await lineOf('lv_count = lv_count');
+  await page.evaluate(l => { const c = document.querySelector('.CodeMirror').CodeMirror; c.setCursor({ line: l, ch: 7 }); c.focus(); }, use);
+  await page.keyboard.press('Alt+Shift+R');
+  const tr = page.waitForSelector('.modal >> text=Select transport request', { timeout: 3000 }).then(() => page.click('.modal button[type=submit]')).catch(() => {});
+  await page.waitForSelector('#rnIn');
+  await tr;
+  await page.fill('#rnIn', 'lv_rows');
+  await page.click('.modal button[type=submit]');
+  await page.waitForSelector('.rf-edit');
+  const changes = (await page.$$('.rf-edit')).length;
+  if (changes !== 3) throw new Error(`expected 3 changed lines, got ${changes}`);
+  if (!(await page.textContent('.rf-prev')).includes('lv_rows = lv_rows + 1')) throw new Error('two changes on one line not merged');
+  await shot('32-rename-preview');
+  await page.click('.modal .btn.primary');
+  await page.waitForSelector('.toast >> text=Activate to finish');
+  const after = await page.evaluate(() => document.querySelector('.CodeMirror').CodeMirror.getValue());
+  if (/lv_count/.test(after) || !/lv_rows = lv_rows \+ 1/.test(after)) throw new Error('rename not applied in the editor');
+  if (await page.$('.tab.on.dirty, .tab.on .dot')) throw new Error('editor should be clean after the refactoring');
+  // extract the three statements into a private method
+  const a = await lineOf('DATA lv_rows'), b = await lineOf('lv_rows = lv_rows');
+  await page.evaluate(([x, y]) => { const c = document.querySelector('.CodeMirror').CodeMirror; c.setSelection({ line: x, ch: 0 }, { line: y + 1, ch: 0 }); c.focus(); }, [a, b]);
+  await page.keyboard.press('Alt+Shift+M');
+  await page.waitForSelector('#exName');
+  await page.fill('#exName', 'count_rows');
+  await page.click('.modal button[type=submit]');
+  await page.waitForSelector('.rf-edit');
+  await page.click('.modal .btn.primary');
+  await page.waitForSelector('.toast >> text=Extract method count_rows');
+  const ex = await page.evaluate(() => document.querySelector('.CodeMirror').CodeMirror.getValue());
+  if (!/PRIVATE SECTION\.\n    METHODS count_rows\./.test(ex) || !/    count_rows\( \)\.\n  ENDMETHOD\./.test(ex) || !/  METHOD count_rows\.\n    DATA lv_rows TYPE string\./.test(ex)) throw new Error(ex.slice(0, 1600));
+});
+
+await step('transport requests: change the description and delete one', async () => {
+  await page.click('[data-view="transports"]');
+  await page.fill('#newTrDesc', 'Temporary request');
+  await page.click('#newTr button[type=submit]');
+  await page.waitForSelector('.tr >> text=Temporary request');
+  const id = await page.$eval('.tr:has-text("Temporary request") code', e => e.textContent);
+  await page.click(`.tr:has-text("${id}") [data-act="tr-edit"]`);
+  await page.fill('#trDescIn', 'Renamed request');
+  await page.click('.modal button[type=submit]');
+  await page.waitForSelector(`.tr:has-text("${id}") >> text=Renamed request`);
+  await shot('33-transport-actions');
+  await page.click(`.tr:has-text("${id}") [data-act="tr-delete"]`);
+  await page.click('.modal .btn.danger');
+  await page.waitForFunction(i => ![...document.querySelectorAll('.tr code')].some(c => c.textContent === i), id);
+});
+
+await step('debugger: grouped variables, other stack frame, change a value', async () => {
+  await page.click('.tab >> text=ZR_NUSA_FLIGHTS');
+  await page.waitForSelector('.tab.on >> text=ZR_NUSA_FLIGHTS');
+  // earlier steps changed the report; the sample run follows the active version
+  if (await page.$('#crumbs .p-warn')) { await page.keyboard.press('Control+F3'); await page.waitForSelector('.toast >> text=Activated ZR_NUSA_FLIGHTS'); }
+  const l = await page.evaluate(() => { const c = document.querySelector('.CodeMirror').CodeMirror; const n = c.getValue().split('\n').findIndex(x => /->calc_load_factor/i.test(x)); c.setCursor({ line: n, ch: 4 }); c.focus(); return n; });
+  await page.keyboard.press('Control+Shift+B');
+  await page.keyboard.press('F8');
+  await page.waitForSelector('#debugbar:not([hidden])');
+  await page.waitForSelector('.vars .vg >> text=Locals');
+  await page.keyboard.press('F5');
+  await page.waitForSelector('.stack >> text=CALC_LOAD_FACTOR');
+  await page.waitForSelector('.vars >> text=IV_SEATS_MAX');
+  await page.click('[data-act="dbg-frame"][data-i="1"]');
+  await page.waitForSelector('.vars >> text=LT_FLIGHTS');
+  await page.waitForSelector('.tab.on >> text=ZR_NUSA_FLIGHTS');
+  await page.click('[data-act="dbg-frame"][data-i="0"]');
+  await page.waitForSelector('.vars >> text=IV_SEATS_MAX');
+  await page.dblclick('.vars li.leafvar:has(.vn:text-is("RV_PERCENT")) .vv');
+  await page.fill('#dvIn', '42');
+  await page.click('.modal button[type=submit]');
+  await page.waitForSelector('.vars li.leafvar:has(.vn:text-is("RV_PERCENT")) .vv:text-is("42")');
+  await shot('34-debugger');
+  await page.keyboard.press('Shift+F5');
+  await page.waitForSelector('#debugbar', { state: 'hidden' });
+  await page.click('.tab >> text=ZR_NUSA_FLIGHTS');
+  await page.evaluate(n => { const c = document.querySelector('.CodeMirror').CodeMirror; c.setCursor({ line: n, ch: 4 }); c.focus(); }, l);
+  await page.keyboard.press('Control+Shift+B');
+});
+
 await step('phone width has no horizontal overflow', async () => {
   await page.setViewportSize({ width: 400, height: 800 });
   await page.waitForTimeout(200);

@@ -10,8 +10,9 @@ import { addLayoutRow, addXmlRow, layoutEffects, removeXmlRow, renderXmlForm, se
 import {
   AtcFinding, Backend, BindingInfo, Breakpoint, Connection, CreateExtra, DebugState, DebugVar, GitRepo, GROUPS, Hit, Include,
   INCLUDE_LABEL, isCdsLike, isSourceType, Location, ObjRef, ObjState, ObjType, PkgRef, PreviewResult, Problem, Proposal, RunResult, StepKind,
-  SystemInfo, Transport, TransportNeed, TYPE_INFO, UnitResult, uriFor,
+  SystemInfo, Transport, TransportNeed, TYPE_INFO, UnitResult, uriFor, QuickFix, RefactorPreview, TextEdit,
 } from '../core/types';
+import { applyEdits, editLines, sortForApply, wordRange } from '../core/edits';
 import { bpLines, bpMarker, CM, createEditor, deleteLines, duplicateLines, moveLines, newDoc, selectNextOccurrence, startCompletion, wordAt } from './editor';
 import { ic, LOGO, typeIcon } from './icons';
 import { cleanAbap, DEFAULT_RULES, RuleId, RULES } from '../core/cleaner';
@@ -36,8 +37,8 @@ interface Tab {
 }
 type PkgData = { packages: PkgRef[]; objects: ObjState[] } | 'loading' | { error: string };
 type ExtId = 'preview' | 'abapgit' | 'cleaner' | 'rapgen' | 'docs' | 'outline';
-interface Settings { editorFont: number; autoComplete: boolean; restoreTabs: boolean; cleanerRules: RuleId[]; ext: Record<ExtId, boolean>; formatOnSave: boolean; cleanOnSave: boolean; keepDrafts: boolean; previewTabs: boolean; formatter: 'nusa' | 'sap'; keywordCase: KeywordCase }
-const APP_VERSION = '0.2.0';
+interface Settings { editorFont: number; autoComplete: boolean; restoreTabs: boolean; cleanerRules: RuleId[]; ext: Record<ExtId, boolean>; formatOnSave: boolean; cleanOnSave: boolean; keepDrafts: boolean; previewTabs: boolean; formatter: 'nusa' | 'sap'; keywordCase: KeywordCase; checkUpdates: boolean }
+const APP_VERSION = '0.3.0';
 
 const EXTENSIONS: { id: ExtId; name: string; icon: string; desc: string; keys: string }[] = [
   { id: 'preview', name: 'Data Preview & SQL Console', icon: 'grid', desc: 'Browse the content of database tables and CDS views and run ABAP SQL, like F8 on a table in Eclipse.', keys: 'F8 on a table or CDS view · Ctrl+Enter runs the query' },
@@ -75,17 +76,21 @@ const json = <T>(k: string, d: T): T => { try { const v = store.get(k); return v
 const TAURI = (window as any).__TAURI__ as { window?: { getCurrentWindow(): any } } | undefined;
 const IS_MAC = /Mac/i.test(navigator.platform || navigator.userAgent);
 
+/** Updates in the desktop app: the latest release, and installing a signed one in place. */
+export interface UpdateInfo { version: string; current: string; notes: string; url: string; installable: boolean }
+export interface UpdateBridge { check(): Promise<UpdateInfo | null>; install(): Promise<void> }
+
 export interface LogonBridge {
   listen(cb: (e: { state: 'waiting' | 'done'; url: string }) => void): void;
   cancel(): Promise<void>;
   reopen(): Promise<void>;
 }
 
-export async function startApp(backend: Backend, opts: { brand?: string; prototype?: boolean; logon?: LogonBridge } = {}) {
+export async function startApp(backend: Backend, opts: { brand?: string; prototype?: boolean; logon?: LogonBridge; updates?: UpdateBridge } = {}) {
   const settings: Settings = json<Settings>('nusa-adt-settings', {
     editorFont: 13, autoComplete: true, restoreTabs: true, cleanerRules: DEFAULT_RULES,
     ext: { preview: true, abapgit: true, cleaner: true, rapgen: true, docs: true, outline: true },
-    formatOnSave: false, cleanOnSave: false, keepDrafts: true, previewTabs: true, formatter: 'nusa', keywordCase: 'upper',
+    formatOnSave: false, cleanOnSave: false, keepDrafts: true, previewTabs: true, formatter: 'nusa', keywordCase: 'upper', checkUpdates: true,
   });
   const saveSettings = () => store.set('nusa-adt-settings', JSON.stringify(settings));
   const ext = (id: ExtId) => settings.ext[id] !== false;
@@ -111,6 +116,8 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     transports: [] as Transport[],
     git: null as GitRepo[] | { error: string } | null,
     debug: null as DebugState | null,
+    /** waiting for a process to reach a breakpoint (Eclipse: debugger listener) */
+    listening: false,
     searchQ: '',
     searchRes: [] as ObjRef[],
     searchErr: '',
@@ -585,9 +592,9 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
             const [, type, name] = e.split(' ');
             const o = allObjs().find(x => x.name === name && x.type === type);
             const g = type in TYPE_INFO ? glyph(type as ObjType) : `<i class="glyph g-${type === 'DEVC' ? 'DEVC' : 'XOBJ'}">${typeIcon(type)}</i>`;
-            return `<li>${o ? `<button class="link" data-act="open" data-uri="${esc(o.uri)}">` : '<span>'}${g}${esc(name)}${o ? '</button>' : '</span>'}<small>R3TR ${esc(type)}</small></li>`;
+            return `<li title="${esc(e)}">${o ? `<button class="link" data-act="open" data-uri="${esc(o.uri)}">` : '<span>'}${g}<span class="tr-name">${esc(name)}</span>${o ? '</button>' : '</span>'}<small>${esc(type)}</small></li>`;
           }).join('') || '<li class="empty">No objects recorded</li>'}</ul>
-          ${t.status === 'modifiable' ? `<div class="tr-actions"><button class="btn ghost small" data-act="release" data-id="${esc(t.id)}">Release…</button></div>` : ''}
+          ${t.status === 'modifiable' ? `<div class="tr-actions"><button class="btn ghost small" data-act="release" data-id="${esc(t.id)}">Release…</button><button class="btn ghost small" data-act="tr-edit" data-id="${esc(t.id)}">Edit description</button><button class="btn ghost small danger-text" data-act="tr-delete" data-id="${esc(t.id)}">Delete…</button></div>` : ''}
         </li>`).join('') || (c.user ? `<li class="empty">No requests of ${esc(c.user)} on ${esc(c.sid)}.<br>Eclipse shows requests you expect here? <button class="link" data-act="diag" data-id="${esc(c.id)}">Open the connection log</button> and send it with your issue.</li>` : '')}</ul>
       ${!list.length && !c.user ? `<form class="side-pad tr-user" id="trUser">
         <p class="note">Nusa Studio lists the requests of your user. With browser logon it could not read your user ID from ${esc(c.sid)}; enter it once (shown in Eclipse or in the Fiori launchpad under your profile, for example CB9980000000).</p>
@@ -639,10 +646,19 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     if (S.view === 'git') renderSide();
   }
 
-  function varTree(vs: DebugVar[]): string {
-    return vs.map(v => v.children && v.children.length
-      ? `<li><details><summary><span class="vn">${esc(v.name)}</span><span class="vv">${esc(v.value)}</span><span class="vt">${esc(v.type)}</span></summary><ul>${varTree(v.children)}</ul></details></li>`
-      : `<li class="leafvar"><span class="vn">${esc(v.name)}</span><span class="vv">${esc(v.value)}</span><span class="vt">${esc(v.type)}</span></li>`).join('');
+  /** Variables like Eclipse: groups open, structures and tables load their parts when opened. */
+  const varKids = new Map<string, DebugVar[]>();
+  function varTree(vs: DebugVar[], depth = 0): string {
+    return vs.map(v => {
+      const kids = v.children ?? (v.id ? varKids.get(v.id) : undefined);
+      const edit = !v.group && !v.expandable ? ` data-act="dbg-set" data-name="${esc(v.name)}" data-value="${esc(v.value)}" title="Double-click to change the value"` : '';
+      const row = v.group ? `<span class="vg">${esc(v.name)}</span>` : `<span class="vn">${esc(v.name)}</span><span class="vv"${edit}>${esc(v.value)}</span><span class="vt">${esc(v.type)}</span>`;
+      if (kids?.length || v.expandable) {
+        const open = v.group && (kids?.length ?? 0) > 0 && depth === 0;
+        return `<li><details ${open ? 'open' : ''} ${v.id && !kids ? `data-load="${esc(v.id)}"` : ''}><summary>${row}</summary><ul>${kids ? varTree(kids, depth + 1) || '<li class="empty">empty</li>' : '<li class="empty"><i class="spin"></i></li>'}</ul></details></li>`;
+      }
+      return `<li class="leafvar">${row}</li>`;
+    }).join('');
   }
 
   function allBreakpoints(): Breakpoint[] {
@@ -664,13 +680,37 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     }).join('') || '<li class="empty">Click left of a line number to set a breakpoint</li>';
     const t = curSrc();
     const canDebug = t && (t.ref.type === 'PROG' || t.ref.type === 'CLAS') && !runBlocker(t);
-    $('#sideBody').innerHTML = d && !d.done ? `
-      <section class="dsec"><h3>Variables</h3><ul class="vars">${varTree(d.vars)}</ul></section>
-      <section class="dsec"><h3>Call stack</h3><ol class="stack">${d.frames.map((f, i) => `<li><button class="row leaf ${i === 0 ? 'on' : ''}" data-act="goto" data-uri="${esc(f.uri)}" data-inc="${f.include}" data-line="${f.line}"><span class="lbl">${esc(f.name)}<small>line ${f.line + 1}</small></span></button></li>`).join('')}</ol></section>
+    const c = conn();
+    const canListen = !c.builtin && c.kind !== 'runner';
+    const sel = d?.frame ?? 0;
+    const body = $('#sideBody');
+    body.innerHTML = d && !d.done ? `
+      ${d.note ? `<div class="side-pad note warn-note">${esc(d.note)}</div>` : ''}
+      <section class="dsec"><h3>Variables${sel ? ` <small>of ${esc(d.frames[sel]?.name || '')}</small>` : ''}</h3><ul class="vars">${varTree(d.vars) || '<li class="empty">No variables here</li>'}</ul></section>
+      <section class="dsec"><h3>Call stack</h3><ol class="stack">${d.frames.map((f, i) => `<li><button class="row leaf ${i === sel ? 'on' : ''}" data-act="dbg-frame" data-i="${i}"><span class="lbl">${esc(f.name)}<small>line ${f.line + 1}</small></span></button></li>`).join('')}</ol></section>
       <section class="dsec"><h3>Breakpoints</h3><ul class="list">${bpHtml}</ul></section>`
+      : S.listening ? `<div class="side-pad listen-card"><p><i class="spin"></i><b>Waiting for a breakpoint</b></p>
+          <p class="note">Run the code now: open the Fiori app or service preview, call the OData or HTTP service, or start the report in SAP GUI as <b>${esc(c.user || 'your user')}</b>. The first process that reaches a breakpoint stops here, like the Eclipse debugger.</p>
+          <button class="btn block" data-act="dbg-unlisten">Stop waiting</button></div>
+        <section class="dsec"><h3>Breakpoints</h3><ul class="list">${bpHtml}</ul></section>`
       : `<div class="side-pad note">${canDebug ? `Set a breakpoint in <b>${esc(t!.ref.name)}</b> or in a class it calls, then press <kbd>F8</kbd>.` : 'Open a program or a console class, set a breakpoint and press <kbd>F8</kbd> to debug it.'}
           ${canDebug ? `<button class="btn primary block" data-cmd="run">${ic('play')}Debug ${esc(t!.ref.name)}</button>` : ''}</div>
+        ${canListen ? `<div class="side-pad"><button class="btn block" data-act="dbg-listen" ${bps.length ? '' : 'disabled'}>${ic('bug')}Wait for any process to stop…</button>
+          <p class="note">For code that runs elsewhere, such as a RAP behavior called by a Fiori app or an OData request. ${bps.length ? '' : 'Set a breakpoint first.'}</p></div>` : ''}
         <section class="dsec"><h3>Breakpoints</h3><ul class="list">${bpHtml}</ul></section>`;
+    body.querySelectorAll<HTMLDetailsElement>('details[data-load]').forEach(det => {
+      det.addEventListener('toggle', async () => {
+        if (!det.open || !S.debug || S.debug.done) return;
+        const id = det.dataset.load as string;
+        if (varKids.has(id)) return;
+        try {
+          varKids.set(id, await backend.debugChildren(id));
+          det.removeAttribute('data-load');
+          const ul = det.querySelector(':scope > ul') as HTMLElement;
+          ul.innerHTML = varTree(varKids.get(id) as DebugVar[], 1) || '<li class="empty">empty</li>';
+        } catch (e) { fail(e, 'Reading the variable'); }
+      }, { once: false });
+    });
   }
 
   function renderExtensions() {
@@ -752,10 +792,17 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
         <h3>ABAP Cleaner rules <small>Ctrl+4</small></h3>
         ${RULES.map(r => `<label class="check"><input type="checkbox" data-rule="${r.id}" ${settings.cleanerRules.includes(r.id) ? 'checked' : ''}><span>${esc(r.label)}${r.example ? `<small>${esc(r.example)}</small>` : ''}</span></label>`).join('')}
       </section>` : ''}
+      ${opts.updates ? `<section class="set">
+        <h3>Updates</h3>
+        <label class="check"><input type="checkbox" id="setUpd" ${settings.checkUpdates ? 'checked' : ''}><span>Look for a new version once a day<small>Reads the latest release on GitHub; nothing about you or your systems is sent.</small></span></label>
+        <button class="btn small" data-cmd="update">Check for updates now</button>
+      </section>` : ''}
       <section class="set">
         <h3>About</h3>
         <p class="note">Nusa Studio ${APP_VERSION} · open-source ABAP workbench by ABAP Nusantara. Systems are stored in your user profile (or next to the portable exe); passwords and tickets in the operating system keychain.</p>
       </section>`;
+    const upd = document.getElementById('setUpd') as HTMLInputElement | null;
+    if (upd) upd.onchange = () => { settings.checkUpdates = upd.checked; saveSettings(); };
     $<HTMLSelectElement>('#setFont').onchange = (e) => {
       settings.editorFont = +(e.target as HTMLSelectElement).value; saveSettings();
       html.style.setProperty('--editor-size', settings.editorFont + 'px'); cm.refresh();
@@ -1694,9 +1741,207 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     });
   }
 
+  // ------------------------------------------------------------------ quick fixes and refactorings
+  /** Applies text changes to the editors, opening objects that are not open yet. Returns the count. */
+  async function applyTextEdits(edits: TextEdit[]): Promise<number> {
+    const groups = new Map<string, TextEdit[]>();
+    for (const e of edits) groups.set(`${e.uri}|${e.include}`, [...(groups.get(`${e.uri}|${e.include}`) || []), e]);
+    let n = 0;
+    for (const list of groups.values()) {
+      const e0 = list[0];
+      let tab = S.tabs.find(x => x.key === `${S.conn}|${e0.uri}` && x.view === 'source');
+      if (!tab) {
+        const st = await backend.state(S.conn, objByUri(e0.uri) || { uri: e0.uri, name: e0.name, type: e0.type, pkg: '', desc: '' }).catch(() => null);
+        if (!st) { toast(`${e0.name} could not be opened; its change was skipped`, 'warn'); continue; }
+        tab = addTab(st, e0.include);
+      }
+      const d = await ensureDoc(tab, e0.include);
+      const go = () => { for (const e of sortForApply(list)) d.replaceRange(e.newText, e.from, e.to); };
+      if (d === cm.getDoc()) cm.operation(go); else go();
+      tab.preview = false;
+      n += list.length;
+    }
+    renderAll();
+    return n;
+  }
+
+  async function quickFix() {
+    const t = curSrc(); if (!t) return;
+    if (!isSourceType(t.ref.type)) { toast('Quick fixes work on source code', 'warn'); return; }
+    const c = cm.getCursor();
+    const src: string = cm.getValue();
+    const fixes = await busy('Looking for quick fixes', () => backend.quickFixes(t.conn, t.ref, t.include, src, c.line, c.ch));
+    if (!fixes) return;
+    if (!fixes.length) { toast('No quick fix here. Press Ctrl+1 on a line with an error or on a name.', 'info', 3500); return; }
+    const at = typeof cm.cursorCoords === 'function' ? cm.cursorCoords(true, 'window') : { left: 240, bottom: 240 };
+    showMenu(at.left, at.bottom + 4, fixes.map(f => ({ label: f.title, run: () => applyFix(t, f, src, c) })));
+  }
+  async function applyFix(t: Tab, f: QuickFix, src: string, c: { line: number; ch: number }) {
+    const edits = await busy(f.title, () => backend.applyQuickFix(t.conn, t.ref, t.include, src, c.line, c.ch, f));
+    if (!edits) return;
+    if (curSrc() === t && cm.getValue() !== src) { toast('The source changed meanwhile. Press Ctrl+1 again.', 'warn'); return; }
+    if (!edits.length) { toast('The quick fix changes nothing here', 'info'); return; }
+    await applyTextEdits(edits);
+    if (curSrc() !== t) await showTab(t, t.include);
+    toast(`${f.title}. Ctrl+Z undoes it.`, 'ok', 3000);
+  }
+
+  /** Before/after lines of every change, grouped by object, then run it once confirmed. */
+  async function confirmRefactoring(p: RefactorPreview): Promise<boolean> {
+    const groups = new Map<string, TextEdit[]>();
+    for (const e of p.edits) groups.set(`${e.uri}|${e.include}`, [...(groups.get(`${e.uri}|${e.include}`) || []), e]);
+    const parts: string[] = [];
+    let shown = 0;
+    for (const list of groups.values()) {
+      const e0 = list[0];
+      const tab = S.tabs.find(x => x.key === `${S.conn}|${e0.uri}`);
+      const open = tab ? docs.get(docKey(tab, e0.include)) : undefined;
+      const text: string = open ? open.getValue() : await backend.read(S.conn, { uri: e0.uri, name: e0.name, type: e0.type, pkg: '', desc: '' }, e0.include, 'inactive').catch(() => '');
+      // changes on the same line show as one line before and after
+      const byLine = new Map<number, TextEdit[]>();
+      for (const e of [...list].sort((a, b) => a.from.line - b.from.line || a.from.ch - b.from.ch)) {
+        const k = e.from.line === e.to.line ? e.from.line : -1 - byLine.size;
+        byLine.set(k, [...(byLine.get(k) || []), e]);
+      }
+      const rows = [...byLine.values()].slice(0, Math.max(0, 300 - shown)).map(es => {
+        shown += es.length;
+        const e = es[0];
+        const l = !text ? { line: e.from.line, before: es.map(x => x.oldText), after: es.map(x => x.newText) }
+          : es.length === 1 ? editLines(text, e)
+            : { line: e.from.line, before: [text.split('\n')[e.from.line] ?? ''], after: [applyEdits(text.split('\n')[e.from.line] ?? '', es.map(x => ({ ...x, from: { line: 0, ch: x.from.ch }, to: { line: 0, ch: x.to.ch } })))] };
+        return `<div class="rf-edit"><span class="rf-ln">${l.line + 1}</span><div><pre class="rf-del">${esc(l.before.join('\n'))}</pre><pre class="rf-add">${esc(l.after.join('\n'))}</pre></div></div>`;
+      }).join('');
+      parts.push(`<section class="rf-obj"><h4>${glyph(e0.type)}<b>${esc(e0.name)}</b>${e0.include !== 'main' ? `<small>${esc(INCLUDE_LABEL[e0.include])}</small>` : ''}<span class="muted">${list.length} change${list.length === 1 ? '' : 's'}</span></h4>${rows}</section>`);
+    }
+    const objs = new Set(p.edits.map(e => e.uri)).size;
+    return !!(await modal<boolean>(p.title, `<p class="note">${p.edits.length} change${p.edits.length === 1 ? '' : 's'} in ${objs} object${objs === 1 ? '' : 's'}. The system makes them when you confirm; the objects are then inactive until you activate them.</p><div class="rf-prev">${parts.join('')}${shown < p.edits.length ? `<p class="note">and ${p.edits.length - shown} more</p>` : ''}</div>`,
+      [{ label: 'Cancel', value: false }, { label: 'Change', value: true, kind: 'primary' }], undefined, true));
+  }
+
+  async function reloadObjects(refs: ObjRef[]) {
+    for (const r of refs) {
+      for (const tab of S.tabs.filter(x => x.key === `${S.conn}|${r.uri}` && x.view === 'source')) {
+        for (const inc of backend.includesOf(tab.ref.type)) {
+          const k = docKey(tab, inc);
+          const d = docs.get(k);
+          if (!d) continue;
+          const text = await backend.read(tab.conn, tab.ref, inc, 'inactive');
+          const at = d.getCursor();
+          d.setValue(text); d.markClean(); d.setCursor(at);
+          base.set(k, text);
+          remember(tab, inc, text, 'Changed by refactoring');
+        }
+        tab.ref = await backend.state(tab.conn, tab.ref).catch(() => tab.ref);
+        await updateObjInCache(tab.ref);
+      }
+    }
+  }
+
+  async function activateRefs(refs: ObjRef[]) {
+    await busy('Activating', async () => {
+      const r = await backend.activate(S.conn, refs);
+      for (const ref of refs) setProblems(ref.uri, r.problems.filter(p => p.uri === ref.uri));
+      for (const tab of S.tabs.filter(x => refs.some(r2 => x.key === `${S.conn}|${r2.uri}`))) { tab.ref = await backend.state(tab.conn, tab.ref).catch(() => tab.ref); await updateObjInCache(tab.ref); }
+      toast(r.ok ? `Activated ${refs.map(x => x.name).join(', ')}` : 'Activation found errors. See Problems.', r.ok ? 'ok' : 'error');
+      if (!r.ok) openPanel('problems');
+    });
+    renderAll();
+  }
+
+  /** Shared by Rename and Extract Method: transport, preview, confirm, execute, reload. */
+  async function runRefactoring(t: Tab, label: string, build: (transport?: string) => Promise<RefactorPreview>) {
+    const need = await backend.transportNeed(t.conn, t.ref).catch(() => ({ needed: false, requests: [] } as TransportNeed));
+    let tr = need.current;
+    if (need.needed) { tr = (await chooseTransport(t.ref, need, 'is changed by this refactoring and must be recorded in a transport request')) ?? undefined; if (!tr) return; }
+    const p = await busy(label, () => build(tr));
+    if (!p) return;
+    if (!p.edits.length) { toast('Nothing to change', 'info'); return; }
+    const dirty = p.objects.map(o => S.tabs.find(x => x.key === `${S.conn}|${o.uri}`)).filter((x): x is Tab => !!x && isDirty(x));
+    if (dirty.length) { toast(`Save ${dirty.map(x => x.ref.name).join(', ')} first: the system changes the saved version`, 'warn', 6000); return; }
+    if (!(await confirmRefactoring(p))) return;
+    const ok = await busy(p.title, async () => {
+      for (const o of p.objects) {
+        const x = S.tabs.find(y => y.key === `${S.conn}|${o.uri}`);
+        if (x?.lock && x.lock !== 'pending') { const l = x.lock; x.lock = undefined; await backend.unlock(x.conn, x.ref, l).catch(() => undefined); }
+      }
+      await backend.refactorExecute(t.conn, p);
+      await reloadObjects(p.objects);
+      if (conn().transports) S.transports = await backend.transports(S.conn).catch(() => S.transports);
+      return true;
+    });
+    renderAll();
+    if (ok) toast(`${p.title}: ${p.edits.length} change${p.edits.length === 1 ? '' : 's'}${tr ? ` in ${tr}` : ''}. Activate to finish.`, 'ok', 9000, { label: 'Activate', run: () => activateRefs(p.objects) });
+  }
+
+  async function renameSymbol() {
+    const t = curSrc(); if (!t) return;
+    if (TYPE_INFO[t.ref.type].editor !== 'abap') { toast('Rename works on ABAP source', 'warn'); return; }
+    if (isDirty(t) && !(await save(t))) return;
+    const c = cm.getCursor();
+    const line: string = cm.getLine(c.line);
+    const r = wordRange(line, c.ch);
+    if (!r) { toast('Place the cursor on a name to rename it', 'warn'); return; }
+    const start = await busy('Checking the name', () => backend.renameStart(t.conn, t.ref, t.include, c.line, r[0], r[1]));
+    if (!start) return;
+    const old = start.oldName || line.slice(r[0], r[1]);
+    const name = await modal<string>(`Rename ${old}`, `<label class="field"><span>New name</span><input id="rnIn" value="${esc(line.slice(r[0], r[1]))}" spellcheck="false" autocomplete="off" required></label>
+      <p class="note">The system renames every use it knows of, in other objects too, like Eclipse. You see all changes before anything happens.</p><p class="form-err" id="rnErr" hidden></p>`,
+      [{ label: 'Cancel', value: null }, { label: 'Preview', kind: 'primary', submit: true }], (root, close) => {
+        const inp = $<HTMLInputElement>('#rnIn', root);
+        setTimeout(() => { inp.focus(); inp.select(); }, 0);
+        ($('#modalForm', root) as HTMLFormElement).onsubmit = (ev) => {
+          ev.preventDefault();
+          const v = inp.value.trim();
+          const err = $('#rnErr', root);
+          if (!/^[A-Za-z_/][\w/]*$/.test(v)) { err.hidden = false; err.textContent = 'Use letters, digits and _ (and / for a namespace).'; return; }
+          close(v);
+        };
+      });
+    if (!name || name.toLowerCase() === old.toLowerCase()) return;
+    await runRefactoring(t, `Rename ${old}`, tr => backend.renamePreview(t.conn, start, name, tr));
+  }
+
+  async function extractMethod() {
+    const t = curSrc(); if (!t) return;
+    if (TYPE_INFO[t.ref.type].editor !== 'abap') { toast('Extract Method works on ABAP source', 'warn'); return; }
+    if (!cm.somethingSelected()) { toast('Select the statements to move into a new method first', 'warn'); return; }
+    const sel = cm.getSelection();
+    if (isDirty(t) && !(await save(t))) return;
+    if (cm.getSelection() !== sel) { toast('Saving changed the layout. Select the statements again.', 'warn'); return; }
+    const from = cm.getCursor('from'), to = cm.getCursor('to');
+    const start = await busy('Analyzing the selection', () => backend.extractStart(t.conn, t.ref, t.include, from, to));
+    if (!start) return;
+    const params = start.params.map((p, i) => `<tr><td><input data-p="${i}" value="${esc(p.name)}" spellcheck="false"></td><td>${esc(p.direction)}</td><td><code>${esc(p.type)}</code></td></tr>`).join('');
+    const ok = await modal<boolean>('Extract Method', `
+      <div class="two"><label class="field"><span>Method name</span><input id="exName" value="${esc(start.name)}" spellcheck="false" autocomplete="off" maxlength="30" required></label>
+        <label class="field"><span>Visibility</span><select id="exVis">${['PUBLIC', 'PROTECTED', 'PRIVATE'].map(v => `<option ${v === start.visibility.toUpperCase() ? 'selected' : ''}>${v}</option>`).join('')}</select></label></div>
+      <label class="check"><input type="checkbox" id="exStatic" ${start.isStatic ? 'checked' : ''}><span>Static method (CLASS-METHODS)</span></label>
+      ${start.params.length ? `<table class="ex-params"><thead><tr><th>Parameter</th><th>Kind</th><th>Type</th></tr></thead><tbody>${params}</tbody></table>` : '<p class="note">The selection needs no parameters.</p>'}
+      <p class="form-err" id="exErr" hidden></p>`,
+      [{ label: 'Cancel', value: false }, { label: 'Preview', kind: 'primary', submit: true }], (root, close) => {
+        ($('#modalForm', root) as HTMLFormElement).onsubmit = (ev) => {
+          ev.preventDefault();
+          const name = $<HTMLInputElement>('#exName', root).value.trim();
+          const err = $('#exErr', root);
+          if (!/^[A-Za-z_][\w]*$/.test(name)) { err.hidden = false; err.textContent = 'The method name uses letters, digits and _.'; return; }
+          start.name = name;
+          start.visibility = $<HTMLSelectElement>('#exVis', root).value;
+          start.isStatic = $<HTMLInputElement>('#exStatic', root).checked;
+          root.querySelectorAll<HTMLInputElement>('input[data-p]').forEach(inp => { start.params[+(inp.dataset.p as string)].name = inp.value.trim() || start.params[+(inp.dataset.p as string)].name; });
+          close(true);
+        };
+      });
+    if (!ok) return;
+    await runRefactoring(t, `Extract method ${start.name}`, tr => backend.extractPreview(t.conn, start, tr));
+  }
+
   /** Returns false when no debug session started, so the caller runs normally. */
   async function startDebug(t: Tab): Promise<boolean> {
-    const r = await busy(t.ref.type === 'PROG' && conn().kind === 's4' ? 'Waiting for the program to hit a breakpoint' : 'Starting debugger', async () => {
+    if (t.ref.type === 'PROG' && !conn().runReports) {
+      // a report on a real system starts in SAP GUI: wait for it like Eclipse does
+      return !!(await listenForDebug(() => backend.debugStart(t.conn, t.ref, allBreakpoints())));
+    }
+    const r = await busy('Starting debugger', async () => {
       const st = await backend.debugStart(t.conn, t.ref, allBreakpoints());
       if (!st) return false;
       await afterDebug(st);
@@ -1704,30 +1949,68 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     });
     return !!r;
   }
-  async function step(kind: StepKind) {
+  /** Shows the waiting state until a process stops at a breakpoint or the user stops waiting. */
+  async function listenForDebug(wait: () => Promise<DebugState | null> = () => backend.debugListen(S.conn, allBreakpoints())): Promise<boolean> {
+    if (S.listening) return false;
+    S.listening = true; S.view = 'debug'; S.sideOpen = true; renderAll();
+    try {
+      const st = await wait();
+      S.listening = false;
+      if (!st) { renderAll(); return false; }
+      await afterDebug(st);
+      return true;
+    } catch (e) {
+      S.listening = false; renderAll();
+      fail(e, 'Debugger');
+      return false;
+    }
+  }
+  async function step(kind: StepKind, target?: Breakpoint) {
     if (!S.debug || S.debug.done) return;
-    try { await afterDebug(await backend.debugStep(kind, allBreakpoints())); } catch (e) { fail(e, 'Debugger step'); }
+    try { await afterDebug(await backend.debugStep(kind, allBreakpoints(), target)); } catch (e) { fail(e, 'Debugger step'); }
+  }
+  function runToLine() {
+    const t = curSrc();
+    if (!t || !S.debug || S.debug.done) return;
+    step('continue', { uri: t.ref.uri, include: t.include, line: cm.getCursor().line });
   }
   async function stopDebug() {
-    if (!S.debug) return;
+    if (!S.debug && !S.listening) return;
+    const was = !!S.debug;
     await backend.debugStop();
-    S.debug = null; markDebugLine(); renderAll();
-    toast('Debugger terminated');
+    S.debug = null; S.listening = false; markDebugLine(); renderAll();
+    toast(was ? 'Debugger terminated' : 'Stopped waiting for breakpoints');
   }
-  async function afterDebug(st: DebugState) {
+  async function afterDebug(st: DebugState, goto = true) {
     S.debug = st;
+    varKids.clear();
     const t = cur();
-    S.output = { output: st.outputSoFar, kind: 'list', title: t?.ref.name || '', at: new Date().toLocaleTimeString() };
     if (st.done) {
-      S.debug = null; openPanel('output');
+      S.debug = null;
+      if (st.outputSoFar) { S.output = { output: st.outputSoFar, kind: 'list', title: t?.ref.name || '', at: new Date().toLocaleTimeString() }; openPanel('output'); }
       markDebugLine(); renderAll();
-      toast('Program finished', 'ok', 2500);
+      toast(st.note || 'Program finished', st.note ? 'info' : 'ok', 3500);
       return;
     }
     S.view = 'debug'; S.sideOpen = true;
-    const f = st.frames[0];
-    await gotoLoc({ uri: f.uri, include: f.include, line: f.line });
+    const f = st.frames[st.frame ?? 0] || st.frames[0];
+    if (goto && f) await gotoLoc({ uri: f.uri, include: f.include, line: f.line });
     markDebugLine(); renderAll();
+  }
+  async function debugFrame(i: number) {
+    if (!S.debug || S.debug.done) return;
+    try { await afterDebug(await backend.debugFrame(i)); } catch (e) { fail(e, 'Switching the stack frame'); }
+  }
+  async function debugSetValue(name: string, value: string) {
+    if (!S.debug || S.debug.done) return;
+    const v = await modal<string>(`Change ${name}`, `<label class="field"><span>New value</span><input id="dvIn" value="${esc(value)}" spellcheck="false" autocomplete="off"></label><p class="note">Text without quotes; the debugger converts it to the type of ${esc(name)}.</p>`,
+      [{ label: 'Cancel', value: null }, { label: 'Change', kind: 'primary', submit: true }], (root, close) => {
+        const inp = $<HTMLInputElement>('#dvIn', root);
+        setTimeout(() => { inp.focus(); inp.select(); }, 0);
+        ($('#modalForm', root) as HTMLFormElement).onsubmit = (ev) => { ev.preventDefault(); close(inp.value); };
+      });
+    if (v === null || v === undefined) return;
+    try { await afterDebug(await backend.debugSetValue(name, v), false); } catch (e) { fail(e, `Changing ${name}`); }
   }
 
   // ------------------------------------------------------------------ data preview and service bindings
@@ -2129,7 +2412,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     store.set('nusa-adt-eclipse-seen', '1');
     await modal('Coming from Eclipse ADT', `<p class="note">Nusa Studio talks to the same ADT services as Eclipse, so nothing changes on the SAP side, and the Eclipse shortcuts you know still work.</p>
       <ul class="eclipse-list">${ECLIPSE_POINTS.map(([h, p]) => `<li><b>${esc(h)}</b><span>${esc(p)}</span></li>`).join('')}</ul>
-      <div class="eclipse-keys"><div><h4>Same keys as Eclipse</h4><dl class="keys">${[['Open object', 'Ctrl+Shift+A'], ['Activate', 'Ctrl+F3'], ['Check', 'Ctrl+F2'], ['Pretty printer', 'Shift+F1'], ['Definition · Element info', 'F3 · F2'], ['Where-used', 'Ctrl+Shift+G'], ['Run', 'F8 / F9'], ['ABAP Unit · ATC', 'Ctrl+Shift+F10 · Ctrl+Shift+F2']].map(([a, k]) => `<dt>${a}</dt><dd><kbd>${k}</kbd></dd>`).join('')}</dl></div>
+      <div class="eclipse-keys"><div><h4>Same keys as Eclipse</h4><dl class="keys">${[['Open object', 'Ctrl+Shift+A'], ['Activate', 'Ctrl+F3'], ['Check', 'Ctrl+F2'], ['Pretty printer', 'Shift+F1'], ['Definition · Element info', 'F3 · F2'], ['Where-used', 'Ctrl+Shift+G'], ['Run', 'F8 / F9'], ['Quick fix · Rename', 'Ctrl+1 · Alt+Shift+R'], ['Extract method', 'Alt+Shift+M'], ['ABAP Unit · ATC', 'Ctrl+Shift+F10 · Ctrl+Shift+F2']].map(([a, k]) => `<dt>${a}</dt><dd><kbd>${k}</kbd></dd>`).join('')}</dl></div>
       <div><h4>New here</h4><dl class="keys">${[['Command palette', 'Ctrl+Shift+P'], ['Next match (multi-cursor)', 'Ctrl+D'], ['Move · copy line', 'Alt+↑↓ · Shift+Alt+↓'], ['Delete line', 'Ctrl+Shift+K'], ['Clean up', 'Ctrl+4'], ['Keyword docs', 'F1']].map(([a, k]) => `<dt>${a}</dt><dd><kbd>${k}</kbd></dd>`).join('')}</dl></div></div>`,
       [{ label: 'Close', value: null, kind: 'primary' }], (root) => { setTimeout(() => { const m = root.closest('.modal'); if (m) m.scrollTop = 0; }, 0); }, true);
     renderWelcome();
@@ -2323,6 +2606,29 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     await connectCurrent();
     if (sysOk()) toast(`Connected to ${conn().sid}`, 'ok', 2000);
   }
+  async function checkUpdates(manual = false) {
+    const u = opts.updates;
+    if (!u) return;
+    if (!manual) {
+      if (!settings.checkUpdates) return;
+      const last = +(store.get('nusa-adt-update-check') || 0);
+      if (Date.now() - last < 20 * 3600_000) return;
+    }
+    store.set('nusa-adt-update-check', String(Date.now()));
+    let info: UpdateInfo | null;
+    try { info = await u.check(); } catch (e) { if (manual) fail(e, 'Checking for updates'); return; }
+    if (!info) { if (manual) toast(`Nusa Studio ${APP_VERSION} is the latest version`, 'ok'); return; }
+    const v = info;
+    if (store.get('nusa-adt-update-skip') === v.version && !manual) return;
+    toast(`Nusa Studio ${v.version} is available (you have ${v.current}).`, 'info', 15000, v.installable
+      ? { label: 'Install and restart', run: () => installUpdate(v) }
+      : { label: 'Download', run: () => { store.set('nusa-adt-update-skip', v.version); openUrl(v.url); } });
+  }
+  async function installUpdate(v: UpdateInfo) {
+    if (S.tabs.some(isDirty) && !(await confirmBox('Unsaved changes', 'Some editors have unsaved changes. They are kept as drafts and come back after the restart. Install now?', 'Install and restart'))) return;
+    await busy(`Installing Nusa Studio ${v.version}`, () => (opts.updates as UpdateBridge).install());
+  }
+
   function eclipseTip() {
     if (store.get('nusa-adt-eclipse-seen') || store.get('nusa-adt-eclipse-tip')) return;
     store.set('nusa-adt-eclipse-tip', '1');
@@ -2340,6 +2646,38 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       S.transports = await backend.transports(S.conn);
       for (const x of tabsHere()) if (x.view === 'source') x.ref = await backend.state(x.conn, x.ref).catch(() => x.ref);
       toast(`Released ${id}`, 'ok');
+    });
+    renderAll();
+  }
+
+  async function editTrDesc(id: string) {
+    const t = S.transports.find(x => x.id === id);
+    if (!t) return;
+    const desc = await modal<string>(`Description of ${id}`, `<label class="field"><span>Short description</span><input id="trDescIn" maxlength="60" value="${esc(t.desc)}" required></label>`,
+      [{ label: 'Cancel', value: null }, { label: 'Save', kind: 'primary', submit: true }], (root, close) => {
+        const inp = $<HTMLInputElement>('#trDescIn', root);
+        setTimeout(() => { inp.focus(); inp.select(); }, 0);
+        ($('#modalForm', root) as HTMLFormElement).onsubmit = (ev) => { ev.preventDefault(); const v = inp.value.trim(); if (v) close(v); };
+      });
+    if (!desc || desc === t.desc) return;
+    await busy(`Changing ${id}`, async () => {
+      await backend.changeTransportDesc(S.conn, id, desc);
+      S.transports = await backend.transports(S.conn);
+      toast(`${id} is now “${desc}”`, 'ok');
+    });
+    renderAll();
+  }
+
+  async function deleteTr(id: string) {
+    const t = S.transports.find(x => x.id === id);
+    if (!t) return;
+    const ok = await confirmBox(`Delete ${id}?`, `<p>${esc(t.desc)}</p><p class="note">${t.objects.length ? `The ${t.objects.length} object entries are removed from the request; the objects themselves stay. Their next change needs a request again.` : 'The request has no objects.'} This cannot be undone.</p>`, 'Delete request', true);
+    if (!ok) return;
+    await busy(`Deleting ${id}`, async () => {
+      await backend.deleteTransport(S.conn, id);
+      S.transports = await backend.transports(S.conn);
+      for (const x of tabsHere()) if (x.view === 'source') x.ref = await backend.state(x.conn, x.ref).catch(() => x.ref);
+      toast(`Deleted ${id}`, 'ok');
     });
     renderAll();
   }
@@ -2418,6 +2756,10 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     { id: 'info', title: 'Show Element Info', key: 'F2', run: elementInfo, when: () => ext('docs') },
     { id: 'docs', title: 'ABAP Keyword Documentation', key: 'F1', run: keywordDocs, when: () => ext('docs') },
     { id: 'where', title: 'Where-Used List', key: 'Ctrl+Shift+G', run: whereUsed },
+    { id: 'quickfix', title: 'Quick Fix', key: 'Ctrl+1', run: quickFix },
+    { id: 'quickfix-vs', title: 'Quick Fix (VS Code key)', key: 'Ctrl+.', run: quickFix },
+    { id: 'rename', title: 'Rename…', key: 'Alt+Shift+R', run: renameSymbol },
+    { id: 'extract', title: 'Extract Method…', key: 'Alt+Shift+M', run: extractMethod },
     { id: 'compare-active', title: 'Compare With: Active Version', run: () => compareActive() },
     { id: 'compare-history', title: 'Compare With: Local History…', run: () => compareHistory() },
     { id: 'next-match', title: 'Add Selection to Next Match', key: 'Ctrl+D', run: () => { if (curSrc()) { selectNextOccurrence(cm); cm.focus(); } } },
@@ -2427,6 +2769,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     { id: 'line-delete', title: 'Delete Line', key: 'Ctrl+Shift+K', run: () => { if (curSrc()) deleteLines(cm); } },
     { id: 'diag', title: 'Show Connection Log (Diagnostics)', run: () => showDiag(S.conn) },
     { id: 'eclipse', title: 'Help: Coming from Eclipse ADT', run: () => eclipseGuide() },
+    { id: 'update', title: 'Check for Updates…', run: () => checkUpdates(true), when: () => !!opts.updates },
     { id: 'rapgen', title: 'Generate RAP Service from Table…', run: () => rapGenerator(), when: () => ext('rapgen') },
     { id: 'git', title: 'abapGit: Show Repositories', run: () => { S.view = 'git'; S.sideOpen = true; renderAll(); }, when: () => ext('abapgit') },
     { id: 'git-link', title: 'abapGit: Link Package to Repository…', run: () => gitLink(), when: () => ext('abapgit') },
@@ -2453,6 +2796,8 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     { id: 'dbg-into', title: 'Debugger: Step Into', key: 'F5', run: () => step('into'), debugOnly: true },
     { id: 'dbg-return', title: 'Debugger: Step Return', key: 'F7', run: () => step('return'), debugOnly: true },
     { id: 'dbg-stop', title: 'Debugger: Terminate', key: 'Shift+F5', run: stopDebug, debugOnly: true },
+    { id: 'dbg-line', title: 'Debugger: Run to Line', key: 'Ctrl+R', run: runToLine, debugOnly: true },
+    { id: 'dbg-listen', title: 'Debugger: Wait for Any Process to Reach a Breakpoint', run: () => listenForDebug(), when: () => !conn().builtin && conn().kind !== 'runner' && !S.listening },
   ];
   if ('reset' in backend) {
     CMDS.push({
@@ -2599,6 +2944,9 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       ...(ext('docs') ? [{ label: 'Element Info', key: 'F2', run: elementInfo }, { label: 'Keyword Documentation', key: 'F1', run: keywordDocs }] : []),
       { label: 'Where-Used List', key: 'Ctrl+Shift+G', run: whereUsed },
       { sep: true },
+      { label: 'Quick Fix', key: 'Ctrl+1', run: quickFix },
+      ...(abap ? [{ label: 'Rename…', key: 'Alt+Shift+R', run: renameSymbol }, { label: 'Extract Method…', key: 'Alt+Shift+M', run: extractMethod, disabled: !cm.somethingSelected() }] : []),
+      { sep: true },
       { label: 'Compare With Active Version', run: () => compareActive() },
       { label: 'Compare With Local History…', run: () => compareHistory() },
       { sep: true },
@@ -2611,6 +2959,8 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   // double-click keeps a preview tab open (VS Code: "Keep Open")
   document.addEventListener('dblclick', (e) => {
     const target = e.target as HTMLElement;
+    const dv = target.closest('[data-act="dbg-set"]') as HTMLElement | null;
+    if (dv) { debugSetValue(dv.dataset.name as string, dv.dataset.value as string); return; }
     const tab = target.closest('.tab') as HTMLElement | null;
     if (tab) { pin(S.tabs.find(x => x.key === tab.dataset.key)); return; }
     const row = target.closest('[data-act="open"],[data-act="open-search"]') as HTMLElement | null;
@@ -2680,6 +3030,9 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       case 'open': { const o = objByUri(d.uri as string) || S.searchRes.find(x => x.uri === d.uri); if (o) await openObj(o, 'main', undefined, el.classList.contains('row') && (e as MouseEvent).detail < 2); break; }
       case 'open-search': { const o = S.searchRes.find(x => x.uri === d.uri); if (o) await openObj(o, 'main', undefined, (e as MouseEvent).detail < 2); break; }
       case 'goto': await gotoLoc({ uri: d.uri as string, include: d.inc as Include, line: +(d.line as string) }); break;
+      case 'dbg-frame': await debugFrame(+(d.i as string)); break;
+      case 'dbg-listen': await listenForDebug(); break;
+      case 'dbg-unlisten': await stopDebug(); break;
       case 'goline': { const t = curSrc(); if (t) await showTab(t, t.include, +(d.line as string)); break; }
       case 'tab': if (!(e.target as HTMLElement).closest('.tclose')) {
         const t = S.tabs.find(x => x.key === d.key);
@@ -2721,6 +3074,8 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       case 'relogin': await relogin(d.id as string); break;
       case 'del-conn': await deleteConn(d.id as string); break;
       case 'release': await releaseTr(d.id as string); break;
+      case 'tr-edit': await editTrDesc(d.id as string); break;
+      case 'tr-delete': await deleteTr(d.id as string); break;
       case 'dp-run': await runPreview(); break;
       case 'dp-copy': { const r = cur()?.data?.result; if (r) await copy([r.columns.map(c => c.name).join('\t'), ...r.rows.map(x => x.join('\t'))].join('\n'), `Copied ${r.rows.length} rows`); break; }
       case 'sb-publish': { const t = cur(); if (t) await publish(t, d.id === '1'); break; }
@@ -2793,4 +3148,5 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   renderAll();
   await connectCurrent();
   setTimeout(eclipseTip, 1500);
+  setTimeout(() => { checkUpdates().catch(() => undefined); }, 8000);
 }

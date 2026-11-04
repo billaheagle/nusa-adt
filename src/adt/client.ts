@@ -380,6 +380,30 @@ export class AdtClient {
     return links;
   }
 
+  /** Deletes a request (its tasks go with it), as in Eclipse's Transport Organizer. */
+  async deleteTransport(id: string): Promise<void> {
+    await this.req({ method: 'DELETE', path: `/sap/bc/adt/cts/transportrequests/${encodeURIComponent(id)}`, accept: 'application/*' });
+  }
+
+  /**
+   * New short description: the request document is read, its description changed and written
+   * back (the transport request editor of ADT). Older releases only know user actions on
+   * tm:root, so that form is tried when the first is refused.
+   */
+  async changeTransportDesc(id: string, desc: string): Promise<void> {
+    const TM = 'application/vnd.sap.adt.transportorganizer.v1+xml';
+    const path = `/sap/bc/adt/cts/transportrequests/${encodeURIComponent(id)}`;
+    let first: unknown;
+    try {
+      const r = await this.req({ method: 'GET', path, accept: TM });
+      const doc = setTransportDesc(r.body, id, desc);
+      if (doc) { await this.req({ method: 'PUT', path, accept: TM, contentType: TM, body: doc }); return; }
+    } catch (e) { first = e; }
+    const body = `<?xml version="1.0" encoding="UTF-8"?><tm:root xmlns:tm="http://www.sap.com/cts/adt/tm" tm:number="${encode(id)}" tm:desc="${encode(desc)}" tm:useraction="changeattributes"/>`;
+    try { await this.req({ method: 'PUT', path, accept: 'application/*', contentType: 'application/*', body }); }
+    catch (e) { throw first instanceof AdtError ? first : e; }
+  }
+
   async releaseTransport(id: string, tasks: string[]): Promise<void> {
     for (const n of [...tasks, id]) {
       const r = await this.req({ method: 'POST', path: `/sap/bc/adt/cts/transportrequests/${n}/newreleasejobs`, accept: 'application/*' });
@@ -560,6 +584,24 @@ export function parseTransportCheck(body: string): TransportCheck {
   }).filter(r => r.id);
   const lock = first(first(x, 'LOCKS'), 'TRKORR');
   return { recording: textOf(x, 'RECORDING') === 'X', lockedIn: lock ? lock.text.trim() : undefined, requests };
+}
+
+/** The request document with a new description on the request itself (not on its tasks); root as a fallback. */
+export function setTransportDesc(xml: string, id: string, desc: string): string | null {
+  for (const el of ['request', 'root']) {
+    let done = false;
+    const re = new RegExp(`<([\\w.-]+:)?${el}\\b([^>]*)>`, 'g');
+    const out = xml.replace(re, (m, p = '', attrs: string) => {
+      if (done || !new RegExp(`\\bnumber="${id}"`).test(attrs)) return m;
+      done = true;
+      const value = `="${encode(desc)}"`;
+      return /\b([\w.-]+:)?desc="[^"]*"/.test(attrs)
+        ? m.replace(/\b(([\w.-]+:)?desc)="[^"]*"/, `$1${value}`)
+        : m.replace(/(\/?>)$/, ` ${p}desc${value}$1`);
+    });
+    if (done) return out;
+  }
+  return null;
 }
 
 export function parseConfigLinks(body: string): string[] {

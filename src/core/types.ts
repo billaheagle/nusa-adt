@@ -133,16 +133,45 @@ export interface AtcFinding { prio: 1 | 2 | 3; check: string; msg: string; at: L
 
 export interface RunResult { output: string; kind: 'list' | 'console'; note?: string }
 
-export interface DebugVar { name: string; type: string; value: string; children?: DebugVar[] }
+export interface DebugVar {
+  name: string; type: string; value: string; children?: DebugVar[];
+  /** Server id for loading children on demand (structures, tables, objects) */
+  id?: string;
+  expandable?: boolean;
+  /** Section heading such as Locals or Parameters (top level only) */
+  group?: boolean;
+}
 export interface DebugFrame { name: string; uri: string; include: Include; line: number }
 export interface DebugState {
   done: boolean;
   frames: DebugFrame[];      // top first
   vars: DebugVar[];
   outputSoFar: string;
+  /** Frame whose variables are shown (0 = where the program stopped) */
+  frame?: number;
+  /** For example breakpoints the system could not set */
+  note?: string;
 }
 export type StepKind = 'into' | 'over' | 'return' | 'continue';
 export interface Breakpoint { uri: string; include: Include; line: number }
+
+/** A text change the system proposes: a quick fix or one step of a refactoring. Lines and columns are 0-based. */
+export interface TextEdit {
+  uri: string; include: Include; name: string; type: ObjType;
+  from: { line: number; ch: number }; to: { line: number; ch: number };
+  oldText: string; newText: string;
+}
+export interface QuickFix { title: string; desc?: string; /** backend data to apply it */ token: string }
+export interface RefactorPreview {
+  title: string; edits: TextEdit[]; objects: ObjRef[];
+  /** backend data to execute it */ token: string;
+}
+export interface RenameStart { oldName: string; token: string }
+export interface ExtractParam { id: string; name: string; direction: string; type: string }
+export interface ExtractStart {
+  name: string; visibility: string; isStatic: boolean; className: string; params: ExtractParam[];
+  token: string;
+}
 
 export interface SystemInfo { release: string; components: string[] }
 
@@ -198,8 +227,27 @@ export interface Backend {
   runAtc(conn: string, obj: ObjRef): Promise<AtcFinding[]>;
   run(conn: string, obj: ObjRef): Promise<RunResult>;
 
+  // Quick fixes and refactorings, the same services Eclipse ADT uses
+  quickFixes(conn: string, obj: ObjRef, include: Include, source: string, line: number, col: number): Promise<QuickFix[]>;
+  applyQuickFix(conn: string, obj: ObjRef, include: Include, source: string, line: number, col: number, fix: QuickFix): Promise<TextEdit[]>;
+  renameStart(conn: string, obj: ObjRef, include: Include, line: number, from: number, to: number): Promise<RenameStart>;
+  renamePreview(conn: string, start: RenameStart, newName: string, transport?: string): Promise<RefactorPreview>;
+  extractStart(conn: string, obj: ObjRef, include: Include, from: { line: number; ch: number }, to: { line: number; ch: number }): Promise<ExtractStart>;
+  extractPreview(conn: string, start: ExtractStart, transport?: string): Promise<RefactorPreview>;
+  refactorExecute(conn: string, preview: RefactorPreview): Promise<void>;
+  deleteTransport(conn: string, id: string): Promise<void>;
+  changeTransportDesc(conn: string, id: string, desc: string): Promise<void>;
+
+  /** Runs obj and stops at the first breakpoint it reaches (null: it finished without stopping). */
   debugStart(conn: string, obj: ObjRef, bps: Breakpoint[]): Promise<DebugState | null>;
-  debugStep(kind: StepKind, bps: Breakpoint[]): Promise<DebugState>;
+  /** Waits, like Eclipse, for any process of the user (a Fiori app, an OData call, a job) to reach a breakpoint. Null when cancelled. */
+  debugListen(conn: string, bps: Breakpoint[]): Promise<DebugState | null>;
+  /** target: Run to Line (Eclipse Ctrl+R) */
+  debugStep(kind: StepKind, bps: Breakpoint[], target?: Breakpoint): Promise<DebugState>;
+  debugChildren(id: string): Promise<DebugVar[]>;
+  /** Shows the variables of another stack frame. */
+  debugFrame(index: number): Promise<DebugState>;
+  debugSetValue(name: string, value: string): Promise<DebugState>;
   debugStop(): Promise<void>;
 }
 

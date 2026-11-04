@@ -43,6 +43,12 @@ export class TauriConnStore implements ConnStore {
   resetSession(id: string) { return invoke<void>('reset_session', { id }); }
 }
 
+/** Updates: latest release on GitHub, and installing a signed update in place. */
+export const desktopUpdates = {
+  check: () => invoke<{ version: string; current: string; notes: string; url: string; installable: boolean } | null>('check_update'),
+  install: () => invoke<void>('install_update'),
+};
+
 /** Browser logon in the desktop app: the link while it waits, and ways to reopen or cancel it. */
 export const desktopLogon = {
   listen(cb: (e: { state: 'waiting' | 'done'; url: string }) => void) {

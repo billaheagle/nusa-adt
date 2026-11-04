@@ -91,15 +91,32 @@ export class RoutingBackend implements Backend {
   gitLink = this.route('gitLink');
   gitPull = this.route('gitPull');
   gitUnlink = this.route('gitUnlink');
+  quickFixes = this.route('quickFixes');
+  applyQuickFix = this.route('applyQuickFix');
+  renameStart = this.route('renameStart');
+  renamePreview = this.route('renamePreview');
+  extractStart = this.route('extractStart');
+  extractPreview = this.route('extractPreview');
+  refactorExecute = this.route('refactorExecute');
+  deleteTransport = this.route('deleteTransport');
+  changeTransportDesc = this.route('changeTransportDesc');
 
   async debugStart(conn: string, obj: Parameters<Backend['debugStart']>[1], bps: Breakpoint[]) {
     const [b, id] = this.pick(conn);
     this.dbgTarget = b;
     return b.debugStart(id, obj, bps);
   }
-  debugStep(kind: StepKind, bps: Breakpoint[]) {
-    return (this.dbgTarget ?? this.real).debugStep(kind, bps);
+  async debugListen(conn: string, bps: Breakpoint[]) {
+    const [b, id] = this.pick(conn);
+    this.dbgTarget = b;
+    return b.debugListen(id, bps);
   }
+  debugStep(kind: StepKind, bps: Breakpoint[], target?: Breakpoint) {
+    return (this.dbgTarget ?? this.real).debugStep(kind, bps, target);
+  }
+  debugChildren(id: string) { return (this.dbgTarget ?? this.real).debugChildren(id); }
+  debugFrame(index: number) { return (this.dbgTarget ?? this.real).debugFrame(index); }
+  debugSetValue(name: string, value: string) { return (this.dbgTarget ?? this.real).debugSetValue(name, value); }
   async debugStop() {
     await (this.dbgTarget ?? this.real).debugStop();
     this.dbgTarget = null;

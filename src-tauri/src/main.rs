@@ -6,11 +6,13 @@ mod connections;
 mod oauth;
 mod rfc;
 mod session;
+mod update;
 
 use connections::Connection;
 use session::{AdtReq, AdtResp, Session};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tauri::Manager;
 use tokio::sync::Mutex;
 
 #[derive(Default)]
@@ -97,6 +99,25 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::default())
+        .setup(|app| {
+            // In-app updates need the public key the release workflow writes into the config
+            // when the signing key is set up; without it the plugin would refuse to start.
+            let key = app
+                .config()
+                .plugins
+                .0
+                .get("updater")
+                .and_then(|u| u.get("pubkey"))
+                .and_then(|k| k.as_str())
+                .map(|k| !k.trim().is_empty())
+                .unwrap_or(false);
+            if key {
+                app.handle()
+                    .plugin(tauri_plugin_updater::Builder::new().build())?;
+            }
+            app.manage(update::UpdaterOn(key));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             cancel_logon,
             reopen_logon,
@@ -104,7 +125,9 @@ fn main() {
             save_connection,
             delete_connection,
             reset_session,
-            adt_request
+            adt_request,
+            update::check_update,
+            update::install_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running Nusa Studio");

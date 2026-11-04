@@ -317,6 +317,11 @@ impl RfcError {
         match self.code {
             RFC_LOGON_FAILURE => format!("{sid} did not accept the logon: {}. Check client, user and password; too many wrong passwords lock the user.", self.message),
             RFC_COMMUNICATION_FAILURE => format!("{sid} could not be reached over RFC: {}. Check the application server, instance number and SAProuter string (the same values as in the SAP GUI logon pad).", self.message),
+            _ if self.message.contains("SADT_REST_RFC_ENDPOINT")
+                && (self.message.contains("046") || self.message.to_lowercase().contains("not found")) =>
+            {
+                format!("Logged on to {sid}, but it has no ADT service (function module SADT_REST_RFC_ENDPOINT is missing). ABAP Development Tools need SAP_BASIS 7.31 SP04 or newer, so Eclipse ADT cannot work with this system either. Check SAP_BASIS in SAP GUI under System → Status → Component information. ({})", self.message)
+            }
             _ if self.message.contains("S_RFC") => format!("{sid}: {}. Your user needs S_RFC for function group SADT_REST_RFC, the same as for Eclipse (role SAP_BC_DWB_ABAPDEVELOPER).", self.message),
             _ => format!("{sid}: {}", self.message),
         }

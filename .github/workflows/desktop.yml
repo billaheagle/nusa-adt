@@ -18,8 +18,33 @@ jobs:
       - run: npx tsc -p .
       - run: npm test
 
+  # Compiles and unit-tests the Rust core on one platform in a few minutes, so a compile
+  # error shows up before the three long installer builds start.
+  rust:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libxdo-dev libssl-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+      - name: Compile and test
+        working-directory: src-tauri
+        run: |
+          mkdir -p ../dist-app && touch ../dist-app/index.html
+          cargo test
+      # Commit this file to src-tauri/ so every build uses the same crate versions.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Cargo.lock
+          path: src-tauri/Cargo.lock
+
   build:
-    needs: test
+    needs: [test, rust]
     permissions:
       contents: write
     strategy:

@@ -6,6 +6,7 @@
 
 use crate::connections::{Auth, Connection, Kind};
 use crate::oauth;
+use crate::rfc;
 use reqwest::cookie::{CookieStore, Jar};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, Method, Url};
@@ -51,6 +52,11 @@ pub struct Session {
     bearer: Mutex<Option<oauth::Token>>,
     /// Reentrance ticket from the browser logon (MYSAPSSO2), for Auth::Sso.
     sso: Mutex<Option<String>>,
+    /// Auth::Rfc: open RFC connections, one for plain requests and one for locks.
+    rfc: [Arc<std::sync::Mutex<Option<rfc::RfcConn>>>; 2],
+    /// Set after a rejected RFC logon: no further attempts until the system is saved again,
+    /// so a wrong password cannot lock the user with a burst of parallel requests.
+    rfc_refused: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 fn build_client(conn: &Connection, jar: Arc<Jar>) -> Result<Client, String> {
@@ -85,6 +91,11 @@ impl Session {
             jars,
             bearer: Mutex::new(None),
             sso: Mutex::new(None),
+            rfc: [
+                Arc::new(std::sync::Mutex::new(None)),
+                Arc::new(std::sync::Mutex::new(None)),
+            ],
+            rfc_refused: Arc::new(std::sync::Mutex::new(None)),
             conn,
             secret,
         }))
@@ -159,7 +170,7 @@ impl Session {
         app: &tauri::AppHandle,
     ) -> Result<reqwest::RequestBuilder, String> {
         match self.conn.auth {
-            Auth::None => Ok(rb),
+            Auth::None | Auth::Rfc => Ok(rb),
             Auth::Basic => Ok(rb.basic_auth(&self.conn.user, self.secret.as_deref())),
             Auth::Sso => {
                 let mut ticket = self.sso.lock().await;
@@ -242,6 +253,9 @@ impl Session {
     }
 
     pub async fn request(&self, req: AdtReq, app: &tauri::AppHandle) -> Result<AdtResp, String> {
+        if self.conn.auth == Auth::Rfc {
+            return self.rfc_request(req).await;
+        }
         let chan = if req.stateful {
             &self.stateful
         } else {
@@ -280,6 +294,105 @@ impl Session {
             return Ok(res);
         }
         Err("Request failed after retry".into())
+    }
+
+    /// ADT over RFC (SADT_REST_RFC_ENDPOINT), like Eclipse for on-premise systems. The
+    /// connections stay open: each new one is a logon, and the stateful one keeps the locks.
+    /// No CSRF token is needed: the RFC logon already authenticates every call.
+    async fn rfc_request(&self, req: AdtReq) -> Result<AdtResp, String> {
+        let c = &self.conn;
+        let sdk_dir = c.rfc_sdk.clone().unwrap_or_default();
+        let logon = rfc::Logon {
+            ashost: c.ashost.clone().unwrap_or_default(),
+            sysnr: c.sysnr.clone().unwrap_or_default(),
+            client: c.client.clone(),
+            user: c.user.clone(),
+            password: self.secret.clone().unwrap_or_default(),
+            language: if c.language.is_empty() {
+                "EN".into()
+            } else {
+                c.language.clone()
+            },
+            saprouter: c.saprouter.clone().unwrap_or_default(),
+        };
+        let sid = c.sid.clone();
+        let slot = self.rfc[if req.stateful { 1 } else { 0 }].clone();
+        let refused = self.rfc_refused.clone();
+        // URI with the query string, as the HTTP request line would carry it. Same parsing as the HTTP route, so already-encoded names (%2F namespaces) stay as they are
+        let mut url =
+            Url::parse(&format!("http://rfc.local{}", req.path)).map_err(|e| e.to_string())?;
+        if !req.query.is_empty() {
+            url.query_pairs_mut().extend_pairs(req.query.iter());
+        }
+        let uri = match url.query() {
+            Some(q) => format!("{}?{}", url.path(), q),
+            None => url.path().to_string(),
+        };
+        let mut headers: Vec<(String, String)> = req
+            .headers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        if !headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("accept"))
+        {
+            headers.push(("Accept".into(), "*/*".into())); // some ADT resources reject requests without it
+        }
+        headers.push((
+            "X-sap-adt-sessiontype".into(),
+            if req.stateful {
+                "stateful"
+            } else {
+                "stateless"
+            }
+            .into(),
+        ));
+        let method = req.method.clone();
+        let body = req.body.clone().unwrap_or_default().into_bytes();
+        let res = tokio::task::spawn_blocking(move || -> Result<rfc::RestResponse, String> {
+            let sdk = rfc::load(&sdk_dir)?;
+            let mut guard = slot
+                .lock()
+                .map_err(|_| "RFC connection lock poisoned".to_string())?;
+            for attempt in 0..2 {
+                if guard.is_none() {
+                    // held while logging on: parallel requests wait instead of each trying a logon
+                    let mut no = refused
+                        .lock()
+                        .map_err(|_| "RFC logon lock poisoned".to_string())?;
+                    if let Some(msg) = no.as_ref() {
+                        return Err(msg.clone());
+                    }
+                    match rfc::RfcConn::open(sdk.clone(), &logon) {
+                        Ok(c) => *guard = Some(c),
+                        Err(e) => {
+                            let msg = e.user_text(&sid);
+                            if e.code == rfc::RFC_LOGON_FAILURE {
+                                *no = Some(msg.clone());
+                            }
+                            return Err(msg);
+                        }
+                    }
+                }
+                let res = guard.as_ref().unwrap().rest(&method, &uri, &headers, &body);
+                match res {
+                    Ok(r) => return Ok(r),
+                    Err(e) if e.broken() && attempt == 0 => {
+                        *guard = None; // dropped connection: open a new one once
+                    }
+                    Err(e) => return Err(e.user_text(&sid)),
+                }
+            }
+            Err(format!("{sid} could not be reached over RFC"))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        Ok(AdtResp {
+            status: res.status,
+            headers: res.headers.into_iter().collect(),
+            body: String::from_utf8_lossy(&res.body).into_owned(),
+        })
     }
 
     async fn send_once(

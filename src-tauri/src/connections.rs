@@ -22,6 +22,8 @@ pub enum Auth {
     Basic,
     Oauth,
     Sso,
+    /// RFC with user and password, like the SAP GUI logon pad (works through SAProuter)
+    Rfc,
     None,
 }
 
@@ -44,6 +46,15 @@ pub struct Connection {
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_self_signed: Option<bool>,
+    /// RFC logon: application server, instance number, SAProuter string, SDK folder
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ashost: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sysnr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saprouter: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rfc_sdk: Option<String>,
 }
 
 impl Connection {
@@ -54,10 +65,14 @@ impl Connection {
             || self.url != other.url
             || self.client != other.client
             // the user only matters for user/password logons; browser logons learn it later
-            || (self.auth == Auth::Basic && self.user != other.user)
+            || (matches!(self.auth, Auth::Basic | Auth::Rfc) && self.user != other.user)
             || self.language != other.language
             || self.auth != other.auth
             || self.allow_self_signed != other.allow_self_signed
+            || self.ashost != other.ashost
+            || self.sysnr != other.sysnr
+            || self.saprouter != other.saprouter
+            || self.rfc_sdk != other.rfc_sdk
     }
 }
 
@@ -106,6 +121,10 @@ pub fn list(app: &tauri::AppHandle) -> Result<Vec<Connection>, String> {
             transports: false,
             label: Some("ABAP runner on this laptop".into()),
             allow_self_signed: None,
+            ashost: None,
+            sysnr: None,
+            saprouter: None,
+            rfc_sdk: None,
         }]);
     }
     let text = fs::read_to_string(&f).map_err(|e| e.to_string())?;

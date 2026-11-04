@@ -201,6 +201,28 @@ await step('systems: add S/4HANA Cloud with browser logon, validation, remove', 
   await page.waitForFunction(() => !document.querySelector('.conn b') || ![...document.querySelectorAll('.conn b')].some(b => b.textContent === 'MY123456'));
 });
 
+await step('systems: on-premise over RFC like the SAP GUI logon pad (SAProuter route is split)', async () => {
+  await page.click('#sideBody [data-act="add-conn"]');
+  await page.selectOption('#sfKind', 's4');
+  await page.selectOption('#sfAuth', 'rfc');
+  if (!(await page.isHidden('#sfUrl'))) throw new Error('URL field visible for RFC');
+  if (await page.isHidden('#sfPw')) throw new Error('password hidden for RFC');
+  await page.fill('#sfSid', 'LNP');
+  await page.fill('#sfRouter', '/H/36.92.53.190/S/3299/W/PC/H/10.27.1.2/S/3220');
+  await page.dispatchEvent('#sfRouter', 'change');
+  if (await page.inputValue('#sfHost') !== '10.27.1.2' || await page.inputValue('#sfSysnr') !== '20' || await page.inputValue('#sfRouter') !== '/H/36.92.53.190/S/3299/W/PC') throw new Error('route not split');
+  await page.fill('#sfUser', 'developer');
+  await page.click('.modal button[type=submit]');
+  await page.waitForSelector('#sfErr >> text=password');
+  await page.fill('#sfPw', 'not-a-real-password');
+  await shot('09b-add-rfc');
+  await page.click('.modal button[type=submit]');
+  await page.waitForSelector('.conn:has-text("LNP") >> text=10.27.1.2 · instance 20 via /H/36.92.53.190/S/3299/W/***');
+  await page.click('.conn:has-text("LNP") [data-act="del-conn"]');
+  await page.click('.modal .btn.danger');
+  await page.waitForFunction(() => ![...document.querySelectorAll('.conn b')].some(b => b.textContent === 'LNP'));
+});
+
 await step('settings: light theme, larger editor font', async () => {
   await page.click('[data-view="settings"]');
   await page.click('[data-act="set-theme"][data-id="light"]');

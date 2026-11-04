@@ -2,7 +2,7 @@
 // systems, settings and the built-in extensions. Everything that talks to a system goes
 // through the Backend interface.
 
-import { systemHosts, systemUrl } from '../core/sysurl';
+import { systemHosts, systemUrl, splitGuiRoute, rfcTarget } from '../core/sysurl';
 import { addSnapshot, diffLines, diffStats, hunks, Snapshot } from '../core/diff';
 import { diagReport, logDiag } from '../core/diag';
 import { formatAbap, formatCds, KeywordCase } from '../core/format';
@@ -59,7 +59,7 @@ const ECLIPSE_POINTS: [string, string][] = [
 ];
 
 const KIND_LABEL: Record<Connection['kind'], string> = { s4: 'On-premise', s4cloud: 'S/4HANA Cloud', btp: 'BTP ABAP', runner: 'Runner' };
-const AUTH_LABEL: Record<Connection['auth'], string> = { basic: 'User and password (keychain)', sso: 'Browser logon (single sign-on)', oauth: 'Service key (OAuth)', none: 'No login' };
+const AUTH_LABEL: Record<Connection['auth'], string> = { basic: 'User and password (keychain)', sso: 'Browser logon (single sign-on)', oauth: 'Service key (OAuth)', rfc: 'SAP GUI logon (RFC, SAProuter)', none: 'No login' };
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string, r: ParentNode = document) => r.querySelector(s) as T;
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
@@ -588,7 +588,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
             return `<li>${o ? `<button class="link" data-act="open" data-uri="${esc(o.uri)}">` : '<span>'}${g}${esc(name)}${o ? '</button>' : '</span>'}<small>R3TR ${esc(type)}</small></li>`;
           }).join('') || '<li class="empty">No objects recorded</li>'}</ul>
           ${t.status === 'modifiable' ? `<div class="tr-actions"><button class="btn ghost small" data-act="release" data-id="${esc(t.id)}">Release…</button></div>` : ''}
-        </li>`).join('') || (c.user ? `<li class="empty">No requests of ${esc(c.user)} on ${esc(c.sid)}</li>` : '')}</ul>
+        </li>`).join('') || (c.user ? `<li class="empty">No requests of ${esc(c.user)} on ${esc(c.sid)}.<br>Eclipse shows requests you expect here? <button class="link" data-act="diag" data-id="${esc(c.id)}">Open the connection log</button> and send it with your issue.</li>` : '')}</ul>
       ${!list.length && !c.user ? `<form class="side-pad tr-user" id="trUser">
         <p class="note">Nusa Studio lists the requests of your user. With browser logon it could not read your user ID from ${esc(c.sid)}; enter it once (shown in Eclipse or in the Fiori launchpad under your profile, for example CB9980000000).</p>
         <label class="field"><span>Your user ID</span><input id="trUserId" autocomplete="off" spellcheck="false" required></label>
@@ -703,7 +703,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
           <div class="conn-head"><b>${esc(c.sid)}</b><span class="pill k-${c.kind}">${c.builtin ? 'Demo' : KIND_LABEL[c.kind]}</span></div>
           ${c.label ? `<div class="conn-sub">${esc(c.label)}</div>` : ''}
           <dl>
-            <dt>URL</dt><dd><code>${esc(c.url)}</code></dd>
+            ${c.auth === 'rfc' ? `<dt>Server</dt><dd><code>${esc(rfcTarget(c))}</code></dd>` : `<dt>URL</dt><dd><code>${esc(c.url)}</code></dd>`}
             ${c.kind === 's4' ? `<dt>Client</dt><dd>${esc(c.client)} · ${esc(c.language)}</dd>` : ''}
             ${c.user ? `<dt>User</dt><dd>${esc(c.user)}</dd>` : ''}
             <dt>Login</dt><dd>${AUTH_LABEL[c.auth]}</dd>
@@ -713,7 +713,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
           <div class="conn-actions">${state}
             ${c.id !== S.conn ? `<button class="btn small primary" data-act="switch" data-id="${esc(c.id)}">Connect</button>` : ''}
             <button class="btn small ghost" data-act="test-conn" data-id="${esc(c.id)}">Test</button>
-            ${c.auth === 'sso' || c.auth === 'oauth' ? `<button class="btn small ghost" data-act="relogin" data-id="${esc(c.id)}">Log in again</button>` : ''}
+            ${c.auth === 'sso' || c.auth === 'oauth' || c.auth === 'rfc' ? `<button class="btn small ghost" data-act="relogin" data-id="${esc(c.id)}">Log in again</button>` : ''}
             ${c.builtin ? '' : `<button class="btn small ghost" data-act="diag" data-id="${esc(c.id)}">Log</button>`}
             ${c.builtin ? '' : `<button class="btn small ghost" data-act="edit-conn" data-id="${esc(c.id)}">Edit</button><button class="btn small ghost danger-text" data-act="del-conn" data-id="${esc(c.id)}">Remove</button>`}
           </div>
@@ -919,7 +919,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       $('#welcome').innerHTML = `<div class="wel wel-err"><div class="err-ic">${ic('plug')}</div><h1>Can't connect to ${esc(c.sid)}</h1><p class="err-msg">${esc(sys.error)}</p>
         <div class="wel-actions">
           <button class="btn primary" data-cmd="reconnect">${ic('refresh')}Try again</button>
-          ${c.auth === 'sso' || c.auth === 'oauth' || c.auth === 'basic' ? `<button class="btn" data-act="relogin" data-id="${esc(c.id)}">Log in again</button>` : ''}
+          ${c.auth === 'sso' || c.auth === 'oauth' || c.auth === 'basic' || c.auth === 'rfc' ? `<button class="btn" data-act="relogin" data-id="${esc(c.id)}">Log in again</button>` : ''}
           ${c.builtin ? '' : `<button class="btn" data-act="edit-conn" data-id="${esc(c.id)}">Edit system</button>`}
         </div>
         ${c.builtin ? '' : `<p class="wel-diag">Still stuck? <button class="link" data-act="diag-copy" data-id="${esc(c.id)}">Copy diagnostics</button> and paste them into an issue or a chat. Passwords and tickets are never included.</p>`}
@@ -2100,13 +2100,17 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   function diagText(id: string): string {
     const c = S.conns.find(x => x.id === id) || conn();
     const sys = S.sys[id];
-    const hosts = c.kind === 'runner' ? null : systemHosts(c.url);
+    const hosts = c.kind === 'runner' || c.auth === 'rfc' ? null : systemHosts(c.url);
     return diagReport({
       'Nusa Studio': APP_VERSION,
       Platform: navigator.userAgent,
       System: `${c.sid} (${KIND_LABEL[c.kind]})`,
       Logon: AUTH_LABEL[c.auth],
-      'URL entered': c.url,
+      'URL entered': c.auth === 'rfc' ? undefined : c.url,
+      'Application server': c.auth === 'rfc' ? `${c.ashost} (instance ${c.sysnr})` : undefined,
+      SAProuter: c.auth === 'rfc' ? (c.saprouter || 'none') : undefined,
+      'RFC SDK folder': c.auth === 'rfc' ? c.rfcSdk : undefined,
+      User: c.auth === 'rfc' || c.auth === 'basic' ? c.user : undefined,
       'ADT host': hosts?.api,
       'Logon page host': c.auth === 'sso' ? hosts?.ui : undefined,
       Client: c.kind === 's4' ? c.client : undefined,
@@ -2141,14 +2145,21 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
         <option value="s4cloud" ${kind0 === 's4cloud' ? 'selected' : ''}>S/4HANA Cloud Public Edition</option>
         <option value="btp" ${kind0 === 'btp' ? 'selected' : ''}>SAP BTP ABAP Environment</option>
         <option value="runner" ${kind0 === 'runner' ? 'selected' : ''}>Local ABAP runner</option></select></label>
-      <label class="field"><span>System URL</span><input id="sfUrl" value="${esc(e?.url || '')}" autocomplete="off" spellcheck="false"><small class="hint" id="sfUrlHint"></small></label>
+      <label class="field" id="sfUrlField"><span>System URL</span><input id="sfUrl" value="${esc(e?.url || '')}" autocomplete="off" spellcheck="false"><small class="hint" id="sfUrlHint"></small></label>
       <div class="two" data-k="s4 runner"><label class="field"><span>System ID</span><input id="sfSid" maxlength="8" value="${esc(e?.sid || '')}" placeholder="S4D" autocomplete="off"></label>
         <label class="field" data-k="s4"><span>Client</span><input id="sfClient" maxlength="3" inputmode="numeric" value="${esc(e?.client || '100')}"></label></div>
       <div class="two" data-k="s4 s4cloud btp">
         <label class="field" data-k="s4 btp"><span>Logon</span><select id="sfAuth"></select></label>
         <label class="field"><span>Language</span><input id="sfLang" maxlength="2" value="${esc(e?.language || 'EN')}"></label></div>
-      <label class="field" data-a="basic sso"><span id="sfUserLabel">User</span><input id="sfUser" value="${esc(e?.user || '')}" autocomplete="off" spellcheck="false"></label>
-      <label class="field" data-a="basic"><span>Password</span><input id="sfPw" type="password" autocomplete="off" placeholder="${e && e.auth === 'basic' ? 'Leave empty to keep the saved password' : ''}"></label>
+      <div data-a="rfc" class="rfc-box">
+        <label class="field"><span>Application server</span><input id="sfHost" value="${esc(e?.ashost || '')}" placeholder="10.27.1.2" autocomplete="off" spellcheck="false"></label>
+        <div class="two"><label class="field"><span>Instance number</span><input id="sfSysnr" maxlength="2" inputmode="numeric" value="${esc(e?.sysnr || '')}" placeholder="00"></label>
+          <label class="field"><span>SAProuter string <small>optional</small></span><input id="sfRouter" value="${esc(e?.saprouter || '')}" placeholder="/H/saprouter.example.com/S/3299" autocomplete="off" spellcheck="false"></label></div>
+        <small class="hint">The same values as the entry in SAP GUI Logon (Properties → Connection). A full route that ends with the server, such as /H/router/S/3299/H/10.27.1.2/S/3220, is split for you.</small>
+        <label class="field"><span>SAP NW RFC SDK folder</span><input id="sfSdk" value="${esc(e?.rfcSdk || 'C:\\SAP\\nwrfcsdk')}" autocomplete="off" spellcheck="false"><small class="hint">The folder you extracted from the SAP Software Center download (it contains lib\\sapnwrfc.dll). SAP does not allow apps to ship it.</small></label>
+      </div>
+      <label class="field" data-a="basic sso rfc"><span id="sfUserLabel">User</span><input id="sfUser" value="${esc(e?.user || '')}" autocomplete="off" spellcheck="false"></label>
+      <label class="field" data-a="basic rfc"><span>Password</span><input id="sfPw" type="password" autocomplete="off" placeholder="${e && (e.auth === 'basic' || e.auth === 'rfc') ? 'Leave empty to keep the saved password' : ''}"></label>
       <label class="field" data-a="oauth"><span>Service key (JSON)</span><textarea id="sfKey" rows="6" spellcheck="false" placeholder='${e && e.auth === 'oauth' ? 'Leave empty to keep the saved key' : '{ "url": "…", "uaa": { "url": "…", "clientid": "…", "clientsecret": "…" } }'}'></textarea></label>
       <p class="note" id="sfNote"></p>
       <label class="field"><span>Name in the list <small>optional</small></span><input id="sfLabel" value="${esc(e?.label || '')}" maxlength="60"></label>
@@ -2165,7 +2176,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
           runner: 'For example http://localhost:7777.',
         };
         const AUTHS: Record<Connection['kind'], [Connection['auth'], string][]> = {
-          s4: [['basic', 'User and password'], ['sso', 'Browser logon (SAML single sign-on)']],
+          s4: [['basic', 'User and password (HTTPS)'], ['rfc', 'SAP GUI / RFC (SAProuter)'], ['sso', 'Browser logon (SAML single sign-on)']],
           s4cloud: [['sso', 'Browser logon']], btp: [['sso', 'Browser logon with the system URL'], ['oauth', 'Service key']], runner: [['none', 'None']],
         };
         const sync = () => {
@@ -2177,19 +2188,32 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
           root.querySelectorAll<HTMLElement>('[data-k]').forEach(el => { el.hidden = !(el.dataset.k as string).split(' ').includes(k); });
           root.querySelectorAll<HTMLElement>('[data-a]').forEach(el => { el.hidden = !(el.dataset.a as string).split(' ').includes(a) || k === 'runner'; });
           $('#sfUrlHint', root).textContent = HINT[k];
+          $('#sfUrlField', root).hidden = a === 'rfc';
+          $('#sfSelf', root).closest('label')!.hidden = k === 'runner' ? false : k !== 's4' || a === 'rfc';
           $('#sfUserLabel', root).textContent = a === 'sso' ? 'User ID (optional, shows your transport requests)' : 'User';
           $<HTMLInputElement>('#sfUrl', root).placeholder = k === 's4cloud' ? 'https://my123456.s4hana.cloud.sap' : k === 'btp' ? 'https://<id>.abap.<region>.hana.ondemand.com' : k === 'runner' ? 'http://localhost:7777' : 'https://host:44300';
           $('#sfNote', root).textContent = a === 'sso' ? 'Your browser opens for the logon, the same way Eclipse does it. Nusa Studio receives a logon ticket on http://localhost and keeps it for this session. Your user needs the developer role (SAP_BR_DEVELOPER on SAP cloud systems).'
             : a === 'oauth' ? 'Create the service key in the SAP BTP cockpit on your ABAP environment instance. It is stored in the operating system keychain.'
-              : a === 'basic' ? 'The password is stored in the operating system keychain, never in a file.' : '';
+              : a === 'basic' ? 'The password is stored in the operating system keychain, never in a file.'
+                : a === 'rfc' ? 'Eclipse connects to on-premise systems this way: over RFC, through the SAProuter if there is one, so no HTTPS port has to be open. The password is stored in the operating system keychain. Several wrong passwords lock the user, so Nusa Studio stops after the first rejected logon.' : '';
         };
         sync();
         kindEl.onchange = sync; authEl.onchange = sync;
+        const routerEl = $<HTMLInputElement>('#sfRouter', root);
+        routerEl.onchange = () => {
+          const r = splitGuiRoute(routerEl.value);
+          routerEl.value = r.saprouter;
+          if (r.ashost) { $<HTMLInputElement>('#sfHost', root).value = r.ashost; $<HTMLInputElement>('#sfSysnr', root).value = r.sysnr || ''; }
+        };
         ($('#modalForm', root) as HTMLFormElement).onsubmit = (ev) => {
           ev.preventDefault();
           const k = kindEl.value as Connection['kind'];
           const a = authEl.value as Connection['auth'];
-          const url = systemUrl(k, $<HTMLInputElement>('#sfUrl', root).value);
+          const route = splitGuiRoute($<HTMLInputElement>('#sfRouter', root).value);
+          const ashost = (route.ashost || $<HTMLInputElement>('#sfHost', root).value).trim();
+          const sysnr = (route.sysnr || $<HTMLInputElement>('#sfSysnr', root).value).trim().padStart(2, '0');
+          const rfcSdk = $<HTMLInputElement>('#sfSdk', root).value.trim();
+          const url = a === 'rfc' ? `rfc://${ashost}:${sysnr}` : systemUrl(k, $<HTMLInputElement>('#sfUrl', root).value);
           let sid = $<HTMLInputElement>('#sfSid', root).value.trim().toUpperCase();
           const client = $<HTMLInputElement>('#sfClient', root).value.trim();
           const user = $<HTMLInputElement>('#sfUser', root).value.trim().toUpperCase();
@@ -2197,25 +2221,31 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
           const key = $<HTMLTextAreaElement>('#sfKey', root).value.trim();
           const err = $('#sfErr', root);
           const bad = (m: string) => { err.hidden = false; err.textContent = m; };
-          if (!/^https?:\/\/[^\s/]+/.test(url)) return bad('Enter the system URL, starting with https://');
-          if (k !== 'runner' && /^http:\/\//.test(url) && !/localhost|127\.0\.0\.1/.test(url)) return bad('SAP systems need https:// for logons.');
+          if (a === 'rfc') {
+            if (!/^[\w.-]+$/.test(ashost)) return bad('Enter the application server, for example 10.27.1.2 or a host name.');
+            if (!/^\d{2}$/.test(sysnr)) return bad('The instance number has two digits, for example 00 or 20.');
+            if (route.saprouter && !/^\/H\//i.test(route.saprouter)) return bad('A SAProuter string starts with /H/, for example /H/saprouter.example.com/S/3299.');
+            if (!rfcSdk) return bad('Choose the folder of the SAP NW RFC SDK.');
+          } else if (!/^https?:\/\/[^\s/]+/.test(url)) return bad('Enter the system URL, starting with https://');
+          if (a !== 'rfc' && k !== 'runner' && /^http:\/\//.test(url) && !/localhost|127\.0\.0\.1/.test(url)) return bad('SAP systems need https:// for logons.');
           if (k === 's4cloud' || k === 'btp') {
             if (!sid) sid = (url.replace(/^https?:\/\//, '').split(/[.:]/)[0].replace(/-api$/i, '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8)) || (k === 'btp' ? 'BTP' : 'S4HC');
           } else if (!/^[A-Z0-9]{3,8}$/.test(sid)) return bad('Enter the system ID, for example S4D.');
           if (k === 's4' && !/^\d{3}$/.test(client)) return bad('The client has three digits, for example 100.');
-          if (a === 'basic' && !user) return bad('Enter your user.');
-          if (a === 'basic' && !pw && !(e && e.auth === 'basic')) return bad('Enter your password.');
+          if ((a === 'basic' || a === 'rfc') && !user) return bad('Enter your user.');
+          if ((a === 'basic' || a === 'rfc') && !pw && !(e && e.auth === a)) return bad('Enter your password.');
           if (a === 'oauth' && !key && !(e && e.auth === 'oauth')) return bad('Paste the service key.');
           if (a === 'oauth' && key) { try { const j = JSON.parse(key); if (!j.uaa?.url || !j.uaa?.clientid) throw new Error('uaa'); } catch { return bad('This is not a service key. It needs a "uaa" section with url, clientid and clientsecret.'); } }
           const c: Connection = {
             id: e?.id || `${sid.toLowerCase()}-${Date.now().toString(36)}`, kind: k, sid, client: k === 's4' ? client : k === 'runner' ? '000' : '',
-            user: a === 'basic' || a === 'sso' ? user : k === 'runner' ? 'NUSA' : '', url, language: ($<HTMLInputElement>('#sfLang', root).value.trim() || 'EN').toUpperCase(),
+            user: a === 'basic' || a === 'sso' || a === 'rfc' ? user : k === 'runner' ? 'NUSA' : '', url, language: ($<HTMLInputElement>('#sfLang', root).value.trim() || 'EN').toUpperCase(),
             auth: a, abapVersion: k === 'runner' ? 'runner' : k === 's4' ? 'standard' : 'cloud',
             favoritePackages: e?.favoritePackages || (k === 'runner' ? ['$TMP'] : []), transports: k !== 'runner', runReports: k === 'runner' ? true : undefined,
             label: $<HTMLInputElement>('#sfLabel', root).value.trim() || undefined,
-            allowSelfSigned: $<HTMLInputElement>('#sfSelf', root).checked || undefined,
+            allowSelfSigned: a !== 'rfc' && $<HTMLInputElement>('#sfSelf', root).checked || undefined,
+            ...(a === 'rfc' ? { ashost, sysnr, saprouter: route.saprouter || undefined, rfcSdk } : {}),
           };
-          close({ c, secret: a === 'basic' ? (pw || undefined) : a === 'oauth' ? (key || undefined) : undefined });
+          close({ c, secret: a === 'basic' || a === 'rfc' ? (pw || undefined) : a === 'oauth' ? (key || undefined) : undefined });
         };
       });
     if (!result) return;

@@ -19,7 +19,8 @@ export function diagEntries(conn?: string): DiagEntry[] {
 export function redact(s: string): string {
   return s
     .replace(/(reentrance-ticket|MYSAPSSO2|access_token|refresh_token|client_secret|password|sap-password)=([^&\s;]+)/gi, '$1=***')
-    .replace(/(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/g, '$1 ***');
+    .replace(/(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/g, '$1 ***')
+    .replace(/(\/H\/[^\s]*?\/W\/)[^/\s]+/gi, '$1***'); // SAProuter route passwords
 }
 
 export function diagReport(info: Record<string, string | undefined>, conn: string, max = 60): string {

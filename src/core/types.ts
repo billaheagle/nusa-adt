@@ -23,8 +23,9 @@ export interface Connection {
   user: string;
   url: string;
   language: string;          // e.g. EN
-  /** basic: user + password · sso: browser logon (reentrance ticket) · oauth: BTP service key */
-  auth: 'basic' | 'oauth' | 'sso' | 'none';
+  /** basic: user + password · sso: browser logon (reentrance ticket) · oauth: BTP service key
+   *  · rfc: SAP GUI style logon over RFC (application server, instance, SAProuter), like Eclipse */
+  auth: 'basic' | 'oauth' | 'sso' | 'rfc' | 'none';
   /** Language version shown in the status bar: Standard ABAP or ABAP for Cloud Development */
   abapVersion: 'standard' | 'cloud' | 'runner';
   favoritePackages: string[];
@@ -32,6 +33,11 @@ export interface Connection {
   label?: string;
   /** Development systems with self-signed TLS certificates */
   allowSelfSigned?: boolean;
+  /** RFC logon (auth 'rfc'): the SAP GUI logon pad values and the NW RFC SDK folder */
+  ashost?: string;
+  sysnr?: string;
+  saprouter?: string;
+  rfcSdk?: string;
   /** Reports with list output can run here (runner, DEMO). */
   runReports?: boolean;
   /** Built into the app (DEMO): cannot be edited or removed. */

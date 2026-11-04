@@ -94,3 +94,28 @@ test('ADT exceptions become readable errors', () => {
   assert.equal(e.message, 'User DEV2 is currently editing ZCL_X');
   assert.equal(e.type, 'ExceptionResourceLocked');
 });
+
+import { parseConfigLinks } from '../src/adt/client';
+test('transport tree: requests without a status folder, search configurations', () => {
+  const tree = `<tm:root xmlns:tm="http://www.sap.com/cts/adt/tm"><tm:workbench><tm:target tm:name="/ZS3/"><tm:request tm:number="ZS3K900007" tm:owner="CB9980000000" tm:desc="Customer mapping" tm:status="D"><tm:task tm:number="ZS3K900008"><tm:abap_object tm:pgmid="R3TR" tm:type="CLAS" tm:name="ZBP_I_MAPPINGCUSTOMERZPR1_S"/></tm:task></tm:request><tm:request tm:number="ZS3K900001" tm:owner="CB9980000000" tm:desc="Old" tm:status="R"/></tm:target></tm:workbench></tm:root>`;
+  const list = parseTransportTree(tree);
+  assert.deepEqual(list.map(t => [t.id, t.status, t.objects.length]), [['ZS3K900007', 'modifiable', 1], ['ZS3K900001', 'released', 0]]);
+  const cfg = `<configs:configurations xmlns:configs="http://www.sap.com/adt/configurations" xmlns:atom="http://www.w3.org/2005/Atom"><configs:configuration configs:createdBy="CB9980000000"><atom:link href="/sap/bc/adt/cts/transportrequests/searchconfiguration/configurations/0A1B2C" rel="self"/></configs:configuration></configs:configurations>`;
+  assert.deepEqual(parseConfigLinks(cfg), ['/sap/bc/adt/cts/transportrequests/searchconfiguration/configurations/0A1B2C']);
+});
+
+import { AdtClient } from '../src/adt/client';
+test('transports: falls back to the search configuration when the user query is empty', async () => {
+  const seen: string[] = [];
+  const http = {
+    async request(_c: string, r: { path: string; query?: Record<string, string | undefined> }) {
+      seen.push(r.path + (r.query?.configUri ? '?configUri' : r.query?.user ? '?user' : ''));
+      if (r.path.endsWith('/configurations')) return { status: 200, headers: {}, body: '<c:configurations xmlns:c="x" xmlns:atom="http://www.w3.org/2005/Atom"><c:configuration><atom:link href="/sap/bc/adt/cts/transportrequests/searchconfiguration/configurations/42"/></c:configuration></c:configurations>' };
+      if (r.query?.configUri) return { status: 200, headers: {}, body: '<tm:root xmlns:tm="t"><tm:workbench><tm:target><tm:modifiable><tm:request tm:number="ZS3K900007" tm:owner="CB9980000000" tm:desc="Mapping"/></tm:modifiable></tm:target></tm:workbench></tm:root>' };
+      return { status: 200, headers: {}, body: '<tm:root xmlns:tm="t"/>' };
+    },
+  };
+  const list = await new AdtClient(http as never, 'c').userTransports('CB9980000000');
+  assert.deepEqual(list.map(t => t.id), ['ZS3K900007']);
+  assert.deepEqual(seen, ['/sap/bc/adt/cts/transportrequests?user', '/sap/bc/adt/cts/transportrequests/searchconfiguration/configurations', '/sap/bc/adt/cts/transportrequests?configUri']);
+});

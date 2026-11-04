@@ -150,7 +150,7 @@ Where Eclipse ADT is still ahead: the debugger, refactorings such as rename and 
 | Run console class | ✓ | ✓ | ✓ | ✓ |
 | Run report with list output | SAP GUI | – | – | ✓ |
 | Debugger | experimental | experimental | experimental | – |
-| Login | user and password or browser | browser (SSO) | service key or browser | none |
+| Login | user and password (HTTPS or RFC through SAProuter) or browser | browser (SSO) | service key or browser | none |
 
 ## Download
 
@@ -180,12 +180,23 @@ To work on a real system, open **Systems** (the server icon at the bottom of the
 
 | Type | What to enter |
 |---|---|
-| **S/4HANA or NetWeaver** | URL such as `https://host:44300` (HTTPS port from transaction `SMICM` → Services), client and user. The password is asked once and kept in the keychain. Systems with SAML or Kerberos can use *Browser logon* instead. |
+| **S/4HANA or NetWeaver** | URL such as `https://host:44300` (HTTPS port from transaction `SMICM` → Services), client and user. The password is asked once and kept in the keychain. Systems with SAML or Kerberos can use *Browser logon* instead. Systems you reach with SAP GUI but not over HTTPS (for example behind a SAProuter) use *SAP GUI / RFC*, see below. |
 | **S/4HANA Cloud Public Edition** | The address of the developer extensibility system as you open it in the browser, such as `https://my123456.s4hana.cloud.sap` (a launchpad link with `/ui#Shell-home` works too, and so does the `-api` URL). The browser opens and you log on as in the Fiori launchpad; Nusa Studio then works against `my123456-api.s4hana.cloud.sap`. While it waits, the window shows the logon link with **Copy link**, **Open again** and **Cancel**, so you can use another browser or profile. |
 | **BTP ABAP Environment** | Either the service key JSON (OAuth, the token refreshes on its own) or just the system URL, such as `https://<id>.abap.eu10.hana.ondemand.com`, with *Browser logon*. |
 | **Local runner** | The runner's URL, for example `http://localhost:7777`. See [docs/RUNNER-PROTOCOL.md](docs/RUNNER-PROTOCOL.md). |
 
 On the SAP side, the ICF services under `/sap/bc/adt` must be active (`SICF`) and the user needs the same authorizations as for Eclipse ADT. On S/4HANA Cloud and BTP that means a business role with the **Developer** catalog (`SAP_BR_DEVELOPER`); without it, logon succeeds but every request returns 401, and Nusa Studio says so. If logon expires, use **Log in again** on the system in the Systems view. If Eclipse ADT already works with the system, Nusa Studio will too. For development systems with self-signed certificates, tick *Accept a self-signed certificate*.
+
+### On-premise through a SAProuter (SAP GUI / RFC)
+
+Eclipse ADT does not need HTTPS for on-premise systems: it sends every ADT request over RFC (function module `SADT_REST_RFC_ENDPOINT`), and RFC goes through a SAProuter. Nusa Studio does the same with the logon type **SAP GUI / RFC (SAProuter)**. It needs the SAP NetWeaver RFC SDK, which SAP does not allow apps to ship, so you download it once:
+
+1. In the SAP Software Center (S-user), search for **SAP NW RFC SDK 7.50** (it is listed under the letter N), choose your platform (Windows on x64 64bit) and download the latest patch.
+2. Extract the `.SAR` with SAPCAR (`sapcar -xvf <file>.SAR`) or the ZIP, for example to `C:\SAP`. You get `C:\SAP\nwrfcsdk\lib\sapnwrfc.dll`.
+3. Windows also needs the Microsoft Visual C++ Redistributable (x64); most PCs with SAP GUI already have it.
+4. In Nusa Studio, add an **S/4HANA or NetWeaver** system with logon **SAP GUI / RFC**, and copy the values from the SAP GUI Logon entry (**Properties → Connection**): application server, instance number, system ID, SAProuter string. Pasting a full route that ends with the server (`/H/router/S/3299/H/10.27.1.2/S/3220`) fills all three. Then the SDK folder, client, user and password.
+
+Nusa Studio keeps two RFC connections open (one for reading, one for locks while you edit), like Eclipse. After a rejected password it stops trying until you save the system again, so a typo cannot lock your user. The user needs the same authorizations as for Eclipse over RFC, including `S_RFC` for function group `SADT_REST_RFC`. SAP GUI only features such as running a report with list output are not part of this. The RFC route is new: if it does not connect, the connection log (**Log** on the system) shows the error from the SDK.
 
 ## How it works
 
@@ -321,13 +332,14 @@ Nusa Studio is a preview. What has been verified so far:
 
 | Area | Status |
 |---|---|
-| Workbench UI end to end (DEMO system, real editor) | 29 scenarios, including the IAM app layout, the data element and domain forms with value help, preview tabs, collapse all, Format Document, the IAM app form and creating a communication scenario; edit, save, activate, completion while typing, packages, new objects, service binding publish, data preview, RAP generator, ABAP Cleaner, abapGit, compare and local history, draft recovery, multi-cursor and line editing, systems, themes, phone width |
+| Workbench UI end to end (DEMO system, real editor) | 30 scenarios, including adding an on-premise system over RFC with a SAProuter route, including the IAM app layout, the data element and domain forms with value help, preview tabs, collapse all, Format Document, the IAM app form and creating a communication scenario; edit, save, activate, completion while typing, packages, new objects, service binding publish, data preview, RAP generator, ABAP Cleaner, abapGit, compare and local history, draft recovery, multi-cursor and line editing, systems, themes, phone width |
 | Desktop shell against an in-memory ADT server | tested: title bar, error pages, save with transport, activate, session restore |
-| ABAP analysis, formatter, cleaner, RAP generator, diff, object types, completion contexts | 61 unit tests; the formatter is checked to keep every token of the sample sources |
+| ABAP analysis, formatter, cleaner, RAP generator, diff, object types, completion contexts | 64 unit tests; the formatter is checked to keep every token of the sample sources |
 | ADT response parsing and edit cycle | tested against recorded payload shapes and an in-memory ADT server |
 | Rust core | compiled and unit-tested by the `rust` job of the workflow before the installers are built |
 | S/4HANA Cloud Public Edition | first checks on a live system: browser logon, package explorer with all object families, class and CDS editing, data element, domain and IAM app forms, service binding and data preview work. Package creation, publishing and abapGit are not checked yet |
 | Other live systems | on-premise S/4HANA and BTP ABAP are not checked yet |
+| RFC through SAProuter | checked against a stand-in for the RFC SDK (logon errors, long values, large bodies); not yet against a real SAP system |
 | Form-based objects on a live system | not tested yet. They are read and saved as the XML document the system returns. New ones are created by copying the format of an existing object of the same type in that system, so the first object of a type the system has never seen still needs Eclipse |
 | Browser logon | redirect to `http://localhost:<port>/adt/redirect`; BTP OAuth needs it allowed by the UAA |
 

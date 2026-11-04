@@ -906,3 +906,5 @@ input.of-chip-in { width: 160px; }
 .of-id .glyph.big svg { width: 24px; height: 24px; }
 .g-DEVC { color: var(--accent); }
 .g-DATA { color: var(--type); }
+
+.rfc-box > .hint { display: block; margin: -2px 0 14px; }

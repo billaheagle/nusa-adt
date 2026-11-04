@@ -141,7 +141,15 @@ test('DEMO backend: packages, new types, publish, data preview, abapGit, delete'
   assert.ok(!(await b.packageContents('s4d', 'ZNUSA_NEW')).objects.length);
 });
 
-import { systemHosts, systemUrl } from '../src/core/sysurl';
+import { rfcTarget, splitGuiRoute, systemHosts, systemUrl } from '../src/core/sysurl';
+test('SAP GUI routes split into SAProuter, server and instance', () => {
+  assert.deepEqual(splitGuiRoute(' /H/36.92.53.190/S/3299/W/PC/H/10.27.1.2/S/3220 '), { saprouter: '/H/36.92.53.190/S/3299/W/PC', ashost: '10.27.1.2', sysnr: '20' });
+  assert.deepEqual(splitGuiRoute('/H/36.92.53.190/S/3299/W/PC'), { saprouter: '/H/36.92.53.190/S/3299/W/PC' });
+  assert.deepEqual(splitGuiRoute('/H/r1/S/3299/H/r2/S/3299'), { saprouter: '/H/r1/S/3299/H/r2/S/3299' }, 'a router chain stays a router chain');
+  assert.deepEqual(splitGuiRoute('/H/r1/S/3299/H/s4d/S/sapdp00'.replace('sapdp00', '3200')), { saprouter: '/H/r1/S/3299', ashost: 's4d', sysnr: '00' });
+  assert.deepEqual(splitGuiRoute(''), { saprouter: '' });
+  assert.equal(rfcTarget({ ashost: '10.27.1.2', sysnr: '20', saprouter: '/H/36.92.53.190/S/3299/W/PC' }), '10.27.1.2 · instance 20 via /H/36.92.53.190/S/3299/W/***');
+});
 test('system URLs: launchpad links and API hosts map to the ADT host', () => {
   const want = { api: 'https://my408355-api.s4hana.cloud.sap', ui: 'https://my408355.s4hana.cloud.sap' };
   assert.deepEqual(systemHosts('https://my408355.s4hana.cloud.sap/ui#Shell-home'), want);
@@ -175,6 +183,8 @@ test('local history keeps newest first without duplicates', () => {
 test('diagnostics never contain secrets', () => {
   assert.equal(redact('GET /x?reentrance-ticket=AbC123&b=1'), 'GET /x?reentrance-ticket=***&b=1');
   assert.equal(redact('Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.x'), 'Authorization: Bearer ***');
+  assert.equal(redact('SAProuter: /H/36.92.53.190/S/3299/W/PC'), 'SAProuter: /H/36.92.53.190/S/3299/W/***');
+  assert.equal(redact('SAProuter: /H/a/S/3299/W/x1/H/b/S/3299/W/y2'), 'SAProuter: /H/a/S/3299/W/***/H/b/S/3299/W/***');
   logDiag('s4h', 'POST /sap/bc/adt/discovery → 401 12 ms ICFLOGONREQUIRED');
   const r = diagReport({ System: 'S4H', Empty: '' }, 's4h');
   assert.match(r, /System: S4H/);

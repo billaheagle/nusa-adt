@@ -330,12 +330,33 @@ export class AdtClient {
     try { return JSON.parse(r.body); } catch { return {}; }
   }
 
+  /**
+   * Requests of the user. Older systems answer the user query; newer ones (S/4HANA Cloud,
+   * recent BTP) list requests through the Transport Organizer search configuration that
+   * Eclipse keeps per user, so that is tried when the user query brings nothing.
+   */
   async userTransports(user: string): Promise<Transport[]> {
-    const r = await this.req({
-      method: 'GET', path: '/sap/bc/adt/cts/transportrequests', query: { user: user || undefined, targets: 'true' },
-      accept: 'application/vnd.sap.adt.transportorganizertree.v1+xml',
-    });
+    let first: unknown;
+    const byUser = await this.transportTree({ user: user || undefined, targets: 'true' }).catch(e => { first = e; return [] as Transport[]; });
+    if (byUser.length) return byUser;
+    const configs = await this.transportConfigurations().catch(() => [] as string[]);
+    for (const configUri of configs) {
+      const list = await this.transportTree({ targets: 'true', configUri }).catch(() => [] as Transport[]);
+      if (list.length) return list;
+    }
+    if (first && !configs.length) throw first;
+    return byUser;
+  }
+
+  private async transportTree(query: Record<string, string | undefined>): Promise<Transport[]> {
+    const r = await this.req({ method: 'GET', path: '/sap/bc/adt/cts/transportrequests', query, accept: 'application/vnd.sap.adt.transportorganizertree.v1+xml' });
     return parseTransportTree(r.body);
+  }
+
+  /** Links of the user's Transport Organizer search configurations (made by Eclipse ADT). */
+  async transportConfigurations(): Promise<string[]> {
+    const r = await this.req({ method: 'GET', path: '/sap/bc/adt/cts/transportrequests/searchconfiguration/configurations', accept: 'application/vnd.sap.adt.configurations.v1+xml' });
+    return parseConfigLinks(r.body);
   }
 
   async releaseTransport(id: string, tasks: string[]): Promise<void> {
@@ -520,14 +541,28 @@ export function parseTransportCheck(body: string): TransportCheck {
   return { recording: textOf(x, 'RECORDING') === 'X', lockedIn: lock ? lock.text.trim() : undefined, requests };
 }
 
+export function parseConfigLinks(body: string): string[] {
+  const hrefs = new Set<string>();
+  const walk = (el: XEl) => {
+    const h = attr(el, 'href');
+    if (h && /searchconfiguration\/configurations\/./.test(h)) hrefs.add(h.replace(/^https?:\/\/[^/]+/, ''));
+    el.children.forEach(walk);
+  };
+  walk(parseXml(body));
+  return [...hrefs];
+}
+
 export function parseTransportTree(body: string): Transport[] {
   const out: Transport[] = [];
+  // status of a request: from the folder it sits in, else from its own status attribute
+  const own = (c: XEl): Transport['status'] => /^[RN]$/.test(attr(c, 'status') || '') ? 'released' : 'modifiable';
   const walk = (el: XEl, status: Transport['status'] | null) => {
     for (const c of el.children) {
       let st = status;
       if (c.local === 'modifiable') st = 'modifiable';
       if (c.local === 'released' || c.local === 'relstarted') st = 'released';
-      if (c.local === 'request' && st) {
+      if (c.local === 'request') {
+        st = st || own(c);
         const objects = new Set<string>();
         for (const o of all(c, 'abap_object')) objects.add(`${attr(o, 'pgmid') || 'R3TR'} ${attr(o, 'type')} ${attr(o, 'name')}`);
         const task = kids(c, 'task')[0];

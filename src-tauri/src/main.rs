@@ -4,6 +4,7 @@
 
 mod connections;
 mod oauth;
+mod rfc;
 mod session;
 
 use connections::Connection;

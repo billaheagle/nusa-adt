@@ -23,7 +23,8 @@ export class TauriTransport implements HttpTransport {
       const r = await invoke<HttpResponse>('adt_request', { conn, req: { ...req, query, headers: req.headers || {}, body: req.body ?? null, stateful: !!req.stateful, timeoutMs: req.timeoutMs ?? null } });
       const ms = Math.round(performance.now() - started);
       const err = r.status >= 400 ? ' ' + (r.headers?.['sap-err-id'] || shortBody(r.body)) : '';
-      logDiag(conn, `${what} → ${r.status} ${ms} ms${err}`);
+      const size = r.body ? ` ${r.body.length < 1024 ? r.body.length + ' B' : (r.body.length / 1024).toFixed(1) + ' kB'}` : '';
+      logDiag(conn, `${what} → ${r.status} ${ms} ms${size}${err}`);
       return r;
     } catch (e) {
       logDiag(conn, `${what} ✕ ${e instanceof Error ? e.message : String(e)}`);

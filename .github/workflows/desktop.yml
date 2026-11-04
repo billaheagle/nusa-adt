@@ -56,15 +56,61 @@ jobs:
       - run: npm install
 
       - uses: tauri-apps/tauri-action@v0
+        id: tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
           releaseName: Nusa ADT v__VERSION__
           releaseBody: |
-            Installers for Windows (.msi / .exe), macOS (.dmg) and Linux (.deb / .AppImage).
+            Installers for Windows (.msi / -setup.exe), macOS (.dmg) and Linux (.deb).
+            Portable, no install needed: Windows *-portable-x64.exe, macOS *-portable-macos.zip, Linux *-portable-x86_64.AppImage.
             The builds are not code-signed yet: Windows shows SmartScreen ("More info" → "Run anyway"),
             macOS needs right-click → Open the first time.
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Package portable build
+        shell: bash
+        env:
+          VERSION: ${{ steps.tauri.outputs.appVersion }}
+        run: |
+          mkdir -p portable
+          case "${{ runner.os }}" in
+            Windows)
+              cp src-tauri/target/release/nusa-adt.exe "portable/Nusa-ADT-${VERSION}-portable-x64.exe" ;;
+            macOS)
+              ditto -c -k --keepParent "src-tauri/target/universal-apple-darwin/release/bundle/macos/Nusa ADT.app" \
+                "portable/Nusa-ADT-${VERSION}-portable-macos.zip" ;;
+            Linux)
+              cp src-tauri/target/release/bundle/appimage/*.AppImage "portable/Nusa-ADT-${VERSION}-portable-x86_64.AppImage"
+              chmod +x portable/*.AppImage ;;
+          esac
+          ls -la portable
+
+      - name: Attach portable build to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.tauri.outputs.releaseId }}
+          REPO: ${{ github.repository }}
+        run: |
+          for f in portable/*; do
+            name=$(basename "$f")
+            # replace an asset left by an earlier run of the same version
+            old=$(gh api "repos/$REPO/releases/$RELEASE_ID/assets" --jq ".[] | select(.name==\"$name\") | .id")
+            if [ -n "$old" ]; then gh api -X DELETE "repos/$REPO/releases/assets/$old"; fi
+            curl -sSf -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary @"$f" \
+              "https://uploads.github.com/repos/$REPO/releases/$RELEASE_ID/assets?name=$name" > /dev/null
+            echo "uploaded $name"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nusa-adt-portable-${{ runner.os }}
+          path: portable/*

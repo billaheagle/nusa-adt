@@ -568,8 +568,11 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     $('#sideBody').innerHTML = `<ul class="list outline">${items.map(i => `<li style="--d:${i.depth}"><button class="row leaf" data-act="goline" data-line="${i.line}"><i class="ol-k ol-${i.kind}">${KIC[i.kind]}</i><span class="lbl">${esc(i.name)}${i.detail ? `<small>${esc(i.detail)}</small>` : ''}</span><span class="cnt">${i.line + 1}</span></button></li>`).join('') || '<li class="empty">Nothing to outline</li>'}</ul>`;
   }
 
+  /** Object entries ticked in the Transport Organizer, per request */
+  const trPick = new Map<string, Set<string>>();
   function renderTransports() {
     const c = conn();
+    for (const [id, set] of trPick) { const t = S.transports.find(x => x.id === id); if (!t || t.status !== 'modifiable') trPick.delete(id); else for (const e of set) if (!t.objects.includes(e)) set.delete(e); }
     if (!c.transports) {
       $('#sideBody').innerHTML = `<div class="side-pad note">${esc(c.label || c.sid)} keeps objects local. Nothing here needs a transport request.</div>`;
       return;
@@ -592,14 +595,24 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
             const [, type, name] = e.split(' ');
             const o = allObjs().find(x => x.name === name && x.type === type);
             const g = type in TYPE_INFO ? glyph(type as ObjType) : `<i class="glyph g-${type === 'DEVC' ? 'DEVC' : 'XOBJ'}">${typeIcon(type)}</i>`;
-            return `<li title="${esc(e)}">${o ? `<button class="link" data-act="open" data-uri="${esc(o.uri)}">` : '<span>'}${g}<span class="tr-name">${esc(name)}</span>${o ? '</button>' : '</span>'}<small>${esc(type)}</small></li>`;
+            const pick = t.status === 'modifiable' ? `<input type="checkbox" class="tr-pick" data-tr="${esc(t.id)}" data-entry="${esc(e)}" ${trPick.get(t.id)?.has(e) ? 'checked' : ''} aria-label="Select ${esc(name)}">` : '';
+            return `<li title="${esc(e)}">${pick}${o ? `<button class="link" data-act="open" data-uri="${esc(o.uri)}">` : '<span>'}${g}<span class="tr-name">${esc(name)}</span>${o ? '</button>' : '</span>'}<small>${esc(type)}</small></li>`;
           }).join('') || '<li class="empty">No objects recorded</li>'}</ul>
-          ${t.status === 'modifiable' ? `<div class="tr-actions"><button class="btn ghost small" data-act="release" data-id="${esc(t.id)}">Release…</button><button class="btn ghost small" data-act="tr-edit" data-id="${esc(t.id)}">Edit description</button><button class="btn ghost small danger-text" data-act="tr-delete" data-id="${esc(t.id)}">Delete…</button></div>` : ''}
+          ${t.status !== 'modifiable' ? '' : trPick.get(t.id)?.size ? `<div class="tr-actions picked"><span class="muted">${trPick.get(t.id)!.size} selected</span><button class="btn small" data-act="tr-move" data-id="${esc(t.id)}" title="Move the selected objects to another request">Move…</button><button class="btn ghost small danger-text" data-act="tr-remove" data-id="${esc(t.id)}" title="Remove the selected objects from this request; the objects stay">Remove…</button><button class="btn ghost small" data-act="tr-unpick" data-id="${esc(t.id)}">Clear</button></div>`
+            : `<div class="tr-actions"><button class="btn ghost small" data-act="release" data-id="${esc(t.id)}">Release…</button><button class="btn ghost small" data-act="tr-edit" data-id="${esc(t.id)}">Edit description</button><button class="btn ghost small danger-text" data-act="tr-delete" data-id="${esc(t.id)}">Delete…</button></div>`}
         </li>`).join('') || (c.user ? `<li class="empty">No requests of ${esc(c.user)} on ${esc(c.sid)}.<br>Eclipse shows requests you expect here? <button class="link" data-act="diag" data-id="${esc(c.id)}">Open the connection log</button> and send it with your issue.</li>` : '')}</ul>
       ${!list.length && !c.user ? `<form class="side-pad tr-user" id="trUser">
         <p class="note">Nusa Studio lists the requests of your user. With browser logon it could not read your user ID from ${esc(c.sid)}; enter it once (shown in Eclipse or in the Fiori launchpad under your profile, for example CB9980000000).</p>
         <label class="field"><span>Your user ID</span><input id="trUserId" autocomplete="off" spellcheck="false" required></label>
         <button class="btn small primary" type="submit">Show my requests</button></form>` : ''}`;
+    $('#sideBody').querySelectorAll<HTMLInputElement>('.tr-pick').forEach(cb => {
+      cb.onchange = () => {
+        const set = trPick.get(cb.dataset.tr as string) ?? new Set<string>();
+        if (cb.checked) set.add(cb.dataset.entry as string); else set.delete(cb.dataset.entry as string);
+        trPick.set(cb.dataset.tr as string, set);
+        const y = $('#sideBody').scrollTop; renderSide(); $('#sideBody').scrollTop = y;
+      };
+    });
     const uf = document.getElementById('trUser') as HTMLFormElement | null;
     if (uf) uf.onsubmit = async (e) => {
       e.preventDefault();
@@ -2668,6 +2681,57 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     renderAll();
   }
 
+  const entryName = (e: string) => e.split(' ').slice(2).join(' ').trim();
+  async function afterTrChange(ids: string[]) {
+    S.transports = await backend.transports(S.conn);
+    for (const id of ids) trPick.delete(id);
+    for (const x of tabsHere()) if (x.view === 'source') x.ref = await backend.state(x.conn, x.ref).catch(() => x.ref);
+  }
+
+  async function removeTrObjects(id: string) {
+    const entries = [...(trPick.get(id) ?? [])];
+    if (!entries.length) return;
+    const ok = await confirmBox(`Remove ${entries.length} object${entries.length === 1 ? '' : 's'} from ${id}?`,
+      `<code>${entries.map(e => esc(entryName(e))).join('</code>, <code>')}</code></p><p class="note">The objects stay in the system; only their entries leave the request, so these changes are no longer transported with ${esc(id)}. The next change to them asks for a request again.`, 'Remove from request', true);
+    if (!ok) return;
+    await busy(`Removing objects from ${id}`, async () => {
+      await backend.removeFromTransport(S.conn, id, entries);
+      await afterTrChange([id]);
+      toast(`Removed ${entries.length} object${entries.length === 1 ? '' : 's'} from ${id}`, 'ok');
+    });
+    renderAll();
+  }
+
+  async function moveTrObjects(id: string) {
+    const entries = [...(trPick.get(id) ?? [])];
+    if (!entries.length) return;
+    const targets = S.transports.filter(t => t.status === 'modifiable' && t.id !== id);
+    const body = `<p><code>${entries.map(e => esc(entryName(e))).join('</code>, <code>')}</code> from <b>${esc(id)}</b> to:</p>
+      <fieldset class="choices">${targets.map((t, i) => `<label class="choice"><input type="radio" name="mv" value="${esc(t.id)}" ${i === 0 ? 'checked' : ''}><span><code>${esc(t.id)}</code> ${esc(t.desc)}<small>${esc(t.owner)} · ${t.objects.length} objects</small></span></label>`).join('')}
+        <label class="choice"><input type="radio" name="mv" value="__new" ${targets.length ? '' : 'checked'}><span>New request<input id="mvNewDesc" placeholder="Short description" maxlength="60"></span></label>
+      </fieldset>`;
+    const to = await modal<string>(`Move ${entries.length} object${entries.length === 1 ? '' : 's'}`, body, [{ label: 'Cancel', value: null }, { label: 'Move', kind: 'primary', submit: true }], (root, close) => {
+      $<HTMLInputElement>('#mvNewDesc', root).onfocus = () => { (root.querySelector('input[value="__new"]') as HTMLInputElement).checked = true; };
+      ($('#modalForm', root) as HTMLFormElement).onsubmit = async (ev) => {
+        ev.preventDefault();
+        const v = (root.querySelector('input[name="mv"]:checked') as HTMLInputElement | null)?.value;
+        if (v !== '__new') { close(v ?? null); return; }
+        const desc = $<HTMLInputElement>('#mvNewDesc', root).value.trim();
+        if (!desc) { $<HTMLInputElement>('#mvNewDesc', root).focus(); return; }
+        const first = entries.map(e => { const [, type] = e.split(' '); return allObjs().find(o => o.type === type && o.name === entryName(e)); }).find(Boolean) || cur()?.ref;
+        try { close(await backend.createTransport(S.conn, desc, first ?? { uri: '', name: '', type: 'CLAS', pkg: conn().favoritePackages[0] || '', desc: '' })); }
+        catch (e) { fail(e, 'Creating the request'); }
+      };
+    });
+    if (!to) return;
+    await busy(`Moving objects to ${to}`, async () => {
+      await backend.moveToTransport(S.conn, id, to, entries);
+      await afterTrChange([id, to]);
+      toast(`Moved ${entries.length} object${entries.length === 1 ? '' : 's'} from ${id} to ${to}`, 'ok');
+    });
+    renderAll();
+  }
+
   async function deleteTr(id: string) {
     const t = S.transports.find(x => x.id === id);
     if (!t) return;
@@ -3076,6 +3140,9 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       case 'release': await releaseTr(d.id as string); break;
       case 'tr-edit': await editTrDesc(d.id as string); break;
       case 'tr-delete': await deleteTr(d.id as string); break;
+      case 'tr-remove': await removeTrObjects(d.id as string); break;
+      case 'tr-move': await moveTrObjects(d.id as string); break;
+      case 'tr-unpick': trPick.delete(d.id as string); renderSide(); break;
       case 'dp-run': await runPreview(); break;
       case 'dp-copy': { const r = cur()?.data?.result; if (r) await copy([r.columns.map(c => c.name).join('\t'), ...r.rows.map(x => x.join('\t'))].join('\n'), `Copied ${r.rows.length} rows`); break; }
       case 'sb-publish': { const t = cur(); if (t) await publish(t, d.id === '1'); break; }

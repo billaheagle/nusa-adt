@@ -377,6 +377,31 @@ export class AdtBackend implements Backend {
     await this.c(conn).deleteTransport(id);
     this.trCache.delete(conn);
   }
+  async removeFromTransport(conn: string, id: string, entries: string[]): Promise<void> {
+    await this.c(conn).removeFromTransport(id, entries);
+    this.forgetTransport(conn, id);
+  }
+  async moveToTransport(conn: string, from: string, to: string, entries: string[]): Promise<void> {
+    const list = this.trCache.get(conn) || await this.transports(conn);
+    const target = list.find(t => t.id === to);
+    if (!target) throw new Error(`Request ${to} is not one of your modifiable requests`);
+    if (target.status !== 'modifiable') throw new Error(`Request ${to} is released`);
+    const source = list.find(t => t.id === from);
+    const cl = this.c(conn);
+    await cl.removeFromTransport(from, entries);
+    try {
+      await cl.addToTransport(to, target.task, entries);
+    } catch (e) {
+      // put them back where they were rather than leave them in no request
+      await cl.addToTransport(from, source?.task, entries).catch(() => undefined);
+      throw e;
+    }
+    this.forgetTransport(conn, from);
+  }
+  private forgetTransport(conn: string, id: string) {
+    this.trCache.delete(conn);
+    for (const [k, v] of this.transportOf) if (k.startsWith(conn + '|') && v === id) this.transportOf.delete(k);
+  }
   async changeTransportDesc(conn: string, id: string, desc: string): Promise<void> {
     await this.c(conn).changeTransportDesc(id, desc);
     this.trCache.delete(conn);

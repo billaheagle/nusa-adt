@@ -12,6 +12,8 @@ export class FakeAdtServer implements HttpTransport {
   log: string[] = [];
   bodies: Record<string, string> = {};
   transports: { id: string; desc: string; objs: string[] }[] = [];
+  /** like a release whose request editor ignores object list changes */
+  ignoreObjectEdits = false;
   // debugger: a listener waits until a class run reaches a breakpoint; the run waits until resumed
   private bps = 0;
   private listener: ((body: string) => void) | null = null;
@@ -99,8 +101,13 @@ export class FakeAdtServer implements HttpTransport {
       const t = this.transports.find(x => x.id === trDoc[1]);
       if (!t) return this.ok('<exc:exception xmlns:exc="x"><localizedMessage>Request does not exist</localizedMessage></exc:exception>', 404);
       if (r.method === 'DELETE') { this.transports = this.transports.filter(x => x !== t); return this.ok(); }
-      if (r.method === 'PUT') { t.desc = (r.body || '').match(/<tm:request [^>]*tm:desc="([^"]*)"/)?.[1] ?? t.desc; return this.ok(r.body); }
-      return this.ok(`<tm:root xmlns:tm="http://www.sap.com/cts/adt/tm" tm:object_type="K"><tm:request tm:number="${t.id}" tm:desc="${t.desc}" tm:owner="DEV"><tm:task tm:number="${t.id}T" tm:desc="${t.desc}"/></tm:request></tm:root>`);
+      if (r.method === 'PUT') {
+        t.desc = (r.body || '').match(/<tm:request [^>]*tm:desc="([^"]*)"/)?.[1] ?? t.desc;
+        if (!this.ignoreObjectEdits) t.objs = [...(r.body || '').matchAll(/<tm:abap_object [^>]*tm:name="([^"]*)"/g)].map(m => m[1]);
+        return this.ok(r.body);
+      }
+      const objs = t.objs.map(n => `<tm:abap_object tm:pgmid="R3TR" tm:type="CLAS" tm:name="${n}" tm:wbtype="CLAS/OC" tm:obj_desc="x"/>`).join('');
+      return this.ok(`<tm:root xmlns:tm="http://www.sap.com/cts/adt/tm" tm:object_type="K"><tm:request tm:number="${t.id}" tm:desc="${t.desc}" tm:owner="DEV">${t.objs.length ? `<tm:task tm:number="${t.id}T" tm:desc="${t.desc}">${objs}</tm:task>` : `<tm:task tm:number="${t.id}T" tm:desc="${t.desc}"/>`}</tm:request></tm:root>`);
     }
     if (p === '/sap/bc/adt/cts/transportrequests') {
       return this.ok(`<tm:root xmlns:tm="http://www.sap.com/cts/adt/tm"><tm:workbench><tm:target><tm:modifiable>${this.transports.map(t => `<tm:request tm:number="${t.id}" tm:owner="DEV" tm:desc="${t.desc}">${t.objs.map(n => `<tm:abap_object tm:pgmid="R3TR" tm:type="CLAS" tm:name="${n}"/>`).join('')}</tm:request>`).join('')}</tm:modifiable></tm:target></tm:workbench></tm:root>`);

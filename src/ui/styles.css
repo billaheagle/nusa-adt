@@ -935,3 +935,9 @@ input.of-chip-in { width: 160px; }
 .listen-card p { margin: 0 0 10px; }
 .listen-card b { margin-left: 6px; }
 .warn-note { color: var(--warn); }
+
+.tr-objs .tr-pick { margin: 0 2px 0 0; flex: none; accent-color: var(--accent); }
+.tr-objs li:has(.tr-pick) { justify-content: flex-start; }
+.tr-objs li:has(.tr-pick) small { margin-left: auto; }
+.tr-actions.picked { align-items: center; }
+.tr-actions.picked .muted { font-size: 12px; margin-right: 4px; }

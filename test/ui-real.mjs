@@ -569,6 +569,23 @@ await step('transport requests: change the description and delete one', async ()
   await page.click(`.tr:has-text("${id}") [data-act="tr-delete"]`);
   await page.click('.modal .btn.danger');
   await page.waitForFunction(i => ![...document.querySelectorAll('.tr code')].some(c => c.textContent === i), id);
+  // move one object to a new request, then take it out of that request
+  const src = await page.$eval('.tr:has(.tr-name:text-is("ZI_NUSA_FLIGHT"))', el => el.querySelector('code').textContent);
+  await page.check(`.tr:has-text("${src}") .tr-pick[data-entry="R3TR DDLS ZI_NUSA_FLIGHT"]`);
+  await page.waitForSelector(`.tr:has-text("${src}") >> text=1 selected`);
+  await page.click(`.tr:has-text("${src}") [data-act="tr-move"]`);
+  await page.click('.modal input[value="__new"]');
+  await page.fill('#mvNewDesc', 'Moved here');
+  await page.click('.modal button[type=submit]');
+  await page.waitForSelector('.toast >> text=Moved 1 object');
+  const dst = await page.$eval('.tr:has-text("Moved here") code', e => e.textContent);
+  await page.waitForSelector(`.tr:has-text("${dst}") .tr-name:text-is("ZI_NUSA_FLIGHT")`);
+  if (await page.$(`.tr:has-text("${src}") .tr-name:text-is("ZI_NUSA_FLIGHT")`)) throw new Error('still in the source request');
+  await page.check(`.tr:has-text("${dst}") .tr-pick`);
+  await shot('35-transport-pick');
+  await page.click(`.tr:has-text("${dst}") [data-act="tr-remove"]`);
+  await page.click('.modal .btn.danger');
+  await page.waitForSelector(`.tr:has-text("${dst}") >> text=No objects recorded`);
 });
 
 await step('debugger: grouped variables, other stack frame, change a value', async () => {

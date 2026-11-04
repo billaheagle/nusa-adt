@@ -4,7 +4,7 @@ import { applyEdits, editLines, wordRange } from '../src/core/edits';
 import { extractMethodEdits, occurrences, quickFixesAt, renameEdits } from '../src/core/localrefactor';
 import { elementDocument, extractRequest, parseFragment, parseGeneric, renameRequest, setElementText } from '../src/adt/refactor';
 import { debugError, parseChildren, parseStack } from '../src/adt/debugger';
-import { setTransportDesc } from '../src/adt/client';
+import { addTransportEntries, hasTransportEntry, removeTransportEntries, setTransportDesc } from '../src/adt/client';
 import { parseXml, textOf } from '../src/adt/xml';
 
 const CLS = `CLASS zcl_x DEFINITION PUBLIC FINAL CREATE PUBLIC.
@@ -127,4 +127,16 @@ test('transport description changes on the request, not on its tasks', () => {
   const req = setTransportDesc('<tm:root xmlns:tm="t"><tm:request tm:number="NPLK900001" tm:desc="Old"/></tm:root>', 'NPLK900001', 'New') as string;
   assert.match(req, /tm:desc="New"\/>/);
   assert.equal(setTransportDesc('<tm:root/>', 'X', 'y'), null);
+});
+
+test('transport documents: object entries come out and go in under the task', () => {
+  const doc = '<tm:root xmlns:tm="t"><tm:request tm:number="NPLK900001"><tm:task tm:number="NPLK900002"><tm:abap_object tm:pgmid="R3TR" tm:type="CLAS" tm:name="ZCL_A"/><tm:abap_object tm:pgmid="R3TR" tm:type="DDLS" tm:name="ZI_B"><tm:link href="x"/></tm:abap_object><tm:abap_object tm:pgmid="LIMU" tm:type="METH" tm:name="ZCL_A                         RUN"/></tm:task></tm:request></tm:root>';
+  const r = removeTransportEntries(doc, ['R3TR DDLS ZI_B', 'R3TR CLAS ZCL_A']);
+  assert.equal(r.removed, 2);
+  assert.ok(!hasTransportEntry(r.xml, 'R3TR CLAS ZCL_A') && hasTransportEntry(r.xml, 'LIMU METH ZCL_A                         RUN'));
+  assert.match(r.xml, /<tm:task tm:number="NPLK900002"><tm:abap_object tm:pgmid="LIMU"/);
+  const empty = '<tm:root xmlns:tm="t"><tm:request tm:number="NPLK900009"><tm:task tm:number="NPLK900010"/></tm:request></tm:root>';
+  const added = addTransportEntries(empty, 'NPLK900010', ['R3TR CLAS ZCL_A', 'R3TR CLAS ZCL_A']) as string;
+  assert.equal(added, '<tm:root xmlns:tm="t"><tm:request tm:number="NPLK900009"><tm:task tm:number="NPLK900010"><tm:abap_object tm:pgmid="R3TR" tm:type="CLAS" tm:name="ZCL_A"/><tm:abap_object tm:pgmid="R3TR" tm:type="CLAS" tm:name="ZCL_A"/></tm:task></tm:request></tm:root>'.replace(/<tm:abap_object[^>]*\/>(?=<tm:abap_object)/, ''));
+  assert.equal(addTransportEntries(empty, 'NPLK999999', ['R3TR CLAS ZCL_A']), null);
 });

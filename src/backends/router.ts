@@ -99,6 +99,8 @@ export class RoutingBackend implements Backend {
   extractPreview = this.route('extractPreview');
   refactorExecute = this.route('refactorExecute');
   deleteTransport = this.route('deleteTransport');
+  removeFromTransport = this.route('removeFromTransport');
+  moveToTransport = this.route('moveToTransport');
   changeTransportDesc = this.route('changeTransportDesc');
 
   async debugStart(conn: string, obj: Parameters<Backend['debugStart']>[1], bps: Breakpoint[]) {

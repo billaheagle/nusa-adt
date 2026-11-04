@@ -993,6 +993,28 @@ export class MockBackend implements Backend {
     this.persist();
   }
 
+  async removeFromTransport(conn: string, id: string, entries: string[]): Promise<void> {
+    await wait(100);
+    const t = this.tr[conn].find(x => x.id === id);
+    if (!t) throw new Error(`Request ${id} not found`);
+    if (t.status !== 'modifiable') throw new Error(`Request ${id} is released; its objects cannot change`);
+    const missing = entries.filter(e => !t.objects.includes(e));
+    if (missing.length) throw new Error(`${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not in ${id}`);
+    t.objects = t.objects.filter(e => !entries.includes(e));
+    for (const o of this.all(conn)) if (o.ref.transport === id && entries.includes(`R3TR ${o.ref.type} ${o.ref.name}`)) o.ref.transport = undefined;
+    this.persist();
+  }
+
+  async moveToTransport(conn: string, from: string, to: string, entries: string[]): Promise<void> {
+    const target = this.tr[conn].find(x => x.id === to);
+    if (!target) throw new Error(`Request ${to} not found`);
+    if (target.status !== 'modifiable') throw new Error(`Request ${to} is released`);
+    await this.removeFromTransport(conn, from, entries);
+    for (const e of entries) if (!target.objects.includes(e)) target.objects.push(e);
+    for (const o of this.all(conn)) if (entries.includes(`R3TR ${o.ref.type} ${o.ref.name}`)) o.ref.transport = to;
+    this.persist();
+  }
+
   async changeTransportDesc(conn: string, id: string, desc: string): Promise<void> {
     await wait(80);
     const t = this.tr[conn].find(x => x.id === id);

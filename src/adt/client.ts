@@ -2,7 +2,7 @@
 // desktop app) owns cookies, CSRF tokens, sap-client/sap-language, auth and the stateful
 // session; this file only knows ADT URLs, payloads and responses.
 
-import { asxValues, attr, all, base64Utf8, encode, first, kid, kids, parseStart, parseXml, textOf, XEl } from './xml';
+import { asxValues, attr, all, base64Utf8, decode, encode, first, kid, kids, parseStart, parseXml, textOf, XEl } from './xml';
 import {
   ADT_TYPE, adtTypeOf, BindingInfo, GitRepo, Include, NewPackage, ObjRef, ObjType, PkgRef, PreviewResult, Transport, TYPE_INFO, ValueHelpItem,
 } from '../core/types';
@@ -404,6 +404,39 @@ export class AdtClient {
     catch (e) { throw first instanceof AdtError ? first : e; }
   }
 
+  private async transportDocument(id: string): Promise<string> {
+    return (await this.req({ method: 'GET', path: `/sap/bc/adt/cts/transportrequests/${encodeURIComponent(id)}`, accept: TM_DOC })).body;
+  }
+  private async putTransportDocument(id: string, xml: string): Promise<void> {
+    await this.req({ method: 'PUT', path: `/sap/bc/adt/cts/transportrequests/${encodeURIComponent(id)}`, accept: TM_DOC, contentType: TM_DOC, body: xml });
+  }
+
+  /**
+   * Removes object entries ("R3TR CLAS ZCL_X") from a request and its tasks, the way the
+   * request editor saves its object list. The objects themselves stay. Checked afterwards,
+   * because a release that ignores the change answers without an error.
+   */
+  async removeFromTransport(id: string, entries: string[]): Promise<void> {
+    const doc = await this.transportDocument(id);
+    const r = removeTransportEntries(doc, entries);
+    if (!r.removed) throw new AdtError(`${entries.join(', ')} ${entries.length === 1 ? 'is' : 'are'} not in ${id}`, 400);
+    await this.putTransportDocument(id, r.xml);
+    const after = await this.transportDocument(id);
+    const still = entries.filter(e => hasTransportEntry(after, e));
+    if (still.length) throw new AdtError(`${id} still holds ${still.join(', ')}: this system does not accept changes to the object list from ADT. Use SE09 for it.`, 400);
+  }
+
+  /** Adds object entries to a request (into its task when it has one) and checks the result. */
+  async addToTransport(id: string, task: string | undefined, entries: string[]): Promise<void> {
+    const doc = await this.transportDocument(id);
+    const xml = addTransportEntries(doc, task || id, entries) ?? addTransportEntries(doc, id, entries);
+    if (!xml) throw new AdtError(`${id} was not found in the answer of the system`, 400);
+    await this.putTransportDocument(id, xml);
+    const after = await this.transportDocument(id);
+    const missing = entries.filter(e => !hasTransportEntry(after, e));
+    if (missing.length) throw new AdtError(`${id} did not take ${missing.join(', ')}: this system does not accept changes to the object list from ADT. Use SE09 for it.`, 400);
+  }
+
   async releaseTransport(id: string, tasks: string[]): Promise<void> {
     for (const n of [...tasks, id]) {
       const r = await this.req({ method: 'POST', path: `/sap/bc/adt/cts/transportrequests/${n}/newreleasejobs`, accept: 'application/*' });
@@ -584,6 +617,48 @@ export function parseTransportCheck(body: string): TransportCheck {
   }).filter(r => r.id);
   const lock = first(first(x, 'LOCKS'), 'TRKORR');
   return { recording: textOf(x, 'RECORDING') === 'X', lockedIn: lock ? lock.text.trim() : undefined, requests };
+}
+
+const TM_DOC = 'application/vnd.sap.adt.transportorganizer.v1+xml';
+/** "R3TR CLAS ZCL_X"; the name is kept as it is (LIMU names contain blanks) */
+const entryParts = (e: string) => { const m = /^\s*(\S+)\s+(\S+)\s+(.*?)\s*$/.exec(e) || ['', 'R3TR', '', e]; return { pgmid: m[1].toUpperCase(), type: m[2].toUpperCase(), name: m[3].toUpperCase() }; };
+const OBJ_RE = /<((?:[\w.-]+:)?)abap_object\b([^>]*?)(?:\/>|>[\s\S]*?<\/\1abap_object>)/g;
+function objAttrs(attrs: string) {
+  const v = (k: string) => decode(new RegExp(`(?:^|\\s)(?:[\\w.-]+:)?${k}="([^"]*)"`).exec(attrs)?.[1] ?? '').toUpperCase();
+  return { pgmid: v('pgmid') || 'R3TR', type: v('type'), name: v('name') };
+}
+const sameEntry = (a: { pgmid: string; type: string; name: string }, b: { pgmid: string; type: string; name: string }) => a.pgmid === b.pgmid && a.type === b.type && a.name === b.name;
+
+/** The request document without the given object entries ("R3TR CLAS ZCL_X"), wherever they sit. */
+export function removeTransportEntries(xml: string, entries: string[]): { xml: string; removed: number } {
+  const want = entries.map(entryParts);
+  let removed = 0;
+  const out = xml.replace(OBJ_RE, (m, _p: string, attrs: string) => {
+    const a = objAttrs(attrs);
+    if (!want.some(w => sameEntry(w, a))) return m;
+    removed++;
+    return '';
+  });
+  return { xml: out, removed };
+}
+
+export function hasTransportEntry(xml: string, entry: string): boolean {
+  const w = entryParts(entry);
+  for (const m of xml.matchAll(OBJ_RE)) if (sameEntry(w, objAttrs(m[2]))) return true;
+  return false;
+}
+
+/** Adds entries under the task or request with this number; null when it is not in the document. */
+export function addTransportEntries(xml: string, number: string, entries: string[]): string | null {
+  const re = new RegExp(`<((?:[\\w.-]+:)?)(task|request)\\b([^>]*\\bnumber="${number}"[^>]*?)(/?)>`);
+  const m = re.exec(xml);
+  if (!m) return null;
+  const [all_, p, el, attrs, self] = m;
+  const add = [...new Set(entries.map(e => JSON.stringify(entryParts(e))))].map(j => JSON.parse(j) as ReturnType<typeof entryParts>)
+    .filter(e => !hasTransportEntry(xml, `${e.pgmid} ${e.type} ${e.name}`))
+    .map(e => `<${p}abap_object ${p}pgmid="${encode(e.pgmid)}" ${p}type="${encode(e.type)}" ${p}name="${encode(e.name)}"/>`).join('');
+  const open = `<${p}${el}${attrs}>`;
+  return xml.replace(all_, self ? `${open}${add}</${p}${el}>` : `${open}${add}`);
 }
 
 /** The request document with a new description on the request itself (not on its tasks); root as a fallback. */

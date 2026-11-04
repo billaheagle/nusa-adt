@@ -236,6 +236,9 @@ export interface Backend {
   extractPreview(conn: string, start: ExtractStart, transport?: string): Promise<RefactorPreview>;
   refactorExecute(conn: string, preview: RefactorPreview): Promise<void>;
   deleteTransport(conn: string, id: string): Promise<void>;
+  /** Object entries such as "R3TR CLAS ZCL_X": out of a request (the objects stay), or into another one. */
+  removeFromTransport(conn: string, id: string, entries: string[]): Promise<void>;
+  moveToTransport(conn: string, from: string, to: string, entries: string[]): Promise<void>;
   changeTransportDesc(conn: string, id: string, desc: string): Promise<void>;
 
   /** Runs obj and stops at the first breakpoint it reaches (null: it finished without stopping). */

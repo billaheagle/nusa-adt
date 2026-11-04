@@ -98,3 +98,24 @@ test('a run that never reaches a breakpoint returns its output instead of waitin
   assert.match(st?.outputSoFar || '', /^Hello from ZCL_DEMO$/);
   assert.ok(srv.log.includes('DELETE /sap/bc/adt/debugger/listeners'), 'listener closed');
 });
+
+test('transport object entries: remove some, move others, and say so when the system ignores it', async () => {
+  const srv = new FakeAdtServer();
+  const b = new AdtBackend(srv, { list: async () => [conn], save: async () => undefined, remove: async () => undefined, resetSession: async () => undefined });
+  await b.connections();
+  const [obj] = await b.packageObjects('npl', 'ZDEMO');
+  const a = await b.createTransport('npl', 'Source', obj);
+  const z = await b.createTransport('npl', 'Target', obj);
+  srv.transports.find(t => t.id === a)!.objs = ['ZCL_A', 'ZCL_B', 'ZCL_C', 'ZCL_D', 'ZCL_E'];
+  await b.transports('npl');
+  await b.removeFromTransport('npl', a, ['R3TR CLAS ZCL_B', 'R3TR CLAS ZCL_D']);
+  assert.deepEqual(srv.transports.find(t => t.id === a)!.objs, ['ZCL_A', 'ZCL_C', 'ZCL_E']);
+  await b.moveToTransport('npl', a, z, ['R3TR CLAS ZCL_C']);
+  assert.deepEqual(srv.transports.find(t => t.id === a)!.objs, ['ZCL_A', 'ZCL_E']);
+  assert.deepEqual(srv.transports.find(t => t.id === z)!.objs, ['ZCL_C']);
+  const list = await b.transports('npl');
+  assert.deepEqual(list.find(t => t.id === z)?.objects, ['R3TR CLAS ZCL_C']);
+  await assert.rejects(b.removeFromTransport('npl', a, ['R3TR CLAS ZCL_X']), /not in/);
+  srv.ignoreObjectEdits = true;
+  await assert.rejects(b.removeFromTransport('npl', a, ['R3TR CLAS ZCL_A']), /does not accept changes to the object list/);
+});

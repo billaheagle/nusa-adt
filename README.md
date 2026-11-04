@@ -82,6 +82,7 @@ Where Eclipse ADT is still ahead: a debugger tested on many releases (watchpoint
 - ABAP Unit with pass/fail per method and jump to the failing line
 - ATC findings grouped by priority
 - Run console classes (`IF_OO_ADT_CLASSRUN`) and, on the local runner, reports
+- **Transport Organizer**: create, release, change the description, delete requests; tick objects to **move** them to another request or **remove** them from one (the objects stay)
 - Debugger with breakpoints, step into/over/return, run to line (`Ctrl+R`), variables grouped like Eclipse (tables show their rows, structures and objects open on demand), changing values, and switching stack frames
 - **Wait for any process**: like the Eclipse debugger, stop in code that runs elsewhere, such as a RAP behavior called by a Fiori app, an OData request, or a report started in SAP GUI
 
@@ -348,15 +349,15 @@ Nusa Studio is a preview. What has been verified so far:
 
 | Area | Status |
 |---|---|
-| Workbench UI end to end (DEMO system, real editor) | 33 scenarios, including quick fix, rename and extract method with their preview, changing and deleting transport requests, the debugger's grouped variables, stack frames and value changes, adding an on-premise system over RFC with a SAProuter route, the IAM app layout, the data element and domain forms with value help, preview tabs, collapse all, Format Document, the IAM app form and creating a communication scenario; edit, save, activate, completion while typing, packages, new objects, service binding publish, data preview, RAP generator, ABAP Cleaner, abapGit, compare and local history, draft recovery, multi-cursor and line editing, systems, themes, phone width |
+| Workbench UI end to end (DEMO system, real editor) | 33 scenarios, including moving objects between transport requests, quick fix, rename and extract method with their preview, changing and deleting transport requests, the debugger's grouped variables, stack frames and value changes, adding an on-premise system over RFC with a SAProuter route, the IAM app layout, the data element and domain forms with value help, preview tabs, collapse all, Format Document, the IAM app form and creating a communication scenario; edit, save, activate, completion while typing, packages, new objects, service binding publish, data preview, RAP generator, ABAP Cleaner, abapGit, compare and local history, draft recovery, multi-cursor and line editing, systems, themes, phone width |
 | Desktop shell against an in-memory ADT server | tested: title bar, error pages, save with transport, activate, session restore |
-| ABAP analysis, formatter, cleaner, RAP generator, diff, object types, completion contexts, refactoring and debugger payloads | 75 unit tests; the formatter is checked to keep every token of the sample sources |
+| ABAP analysis, formatter, cleaner, RAP generator, diff, object types, completion contexts, refactoring, transport and debugger payloads | 77 unit tests; the formatter is checked to keep every token of the sample sources |
 | ADT response parsing and edit cycle | tested against recorded payload shapes and an in-memory ADT server |
 | Rust core | compiled and unit-tested by the `rust` job of the workflow before the installers are built |
 | S/4HANA Cloud Public Edition | first checks on a live system: browser logon, package explorer with all object families, class and CDS editing, data element, domain and IAM app forms, service binding and data preview work. Package creation, publishing and abapGit are not checked yet |
 | Other live systems | on-premise S/4HANA and BTP ABAP are not checked yet |
 | RFC through SAProuter | logon through a SAProuter checked on a live system (SAP ECC 6.0, which has no ADT, so no further); the ADT calls over RFC are checked against a stand-in for the RFC SDK |
-| Quick fix, rename, extract method, debugger, transport delete and description | follow the ADT protocol as Eclipse uses it and are tested against an in-memory ADT server; not yet on a live system. Changing a transport description uses the request document; older releases may refuse it |
+| Quick fix, rename, extract method, debugger, transport delete, description and moving objects | follow the ADT protocol as Eclipse uses it and are tested against an in-memory ADT server; not yet on a live system. Changing a transport description and its object list uses the request document; releases that refuse it get a clear message (then use SE09) |
 | Form-based objects on a live system | not tested yet. They are read and saved as the XML document the system returns. New ones are created by copying the format of an existing object of the same type in that system, so the first object of a type the system has never seen still needs Eclipse |
 | Browser logon | redirect to `http://localhost:<port>/adt/redirect`; BTP OAuth needs it allowed by the UAA |
 

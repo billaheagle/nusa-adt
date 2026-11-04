@@ -77,6 +77,11 @@ export class AdtBackend implements Backend {
   }
 
   searchPackages(conn: string, query: string): Promise<PkgRef[]> { return this.c(conn).searchPackages(query); }
+  async valueHelpObjects(conn: string, query: string, types: string[]) {
+    const q = query.trim() ? (query.includes('*') ? query : query + '*') : '*';
+    const lists = await Promise.all(types.map(t => this.c(conn).searchObjects(q, t, 50).catch(() => [])));
+    return lists.flat().map(o => ({ name: o.name, desc: o.desc, type: o.type.split('/')[0], pkg: o.pkg }));
+  }
 
   async valueHelp(conn: string, kind: 'softwarecomponents' | 'transportlayers'): Promise<ValueHelpItem[]> {
     try { return await this.c(conn).packageValueHelp(kind); } catch { return []; }

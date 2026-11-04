@@ -5,7 +5,7 @@
 
 import { analyze, declaredMethods, implementedMethods, lineOf, prettyPrint, statements } from '../core/abap';
 import { Catalog, StdCatalog, WorkspaceCatalog } from '../core/catalog';
-import { demoXml, template } from '../core/templates';
+import { demoDoma, demoDtel, demoXml, template } from '../core/templates';
 import { completeAbap, completeCds } from '../core/complete';
 import {
   AtcFinding, Backend, BindingInfo, Breakpoint, Connection, CreateExtra, DebugState, DebugVar, GitRepo, Hit, Include, isCdsLike, Location,
@@ -204,13 +204,8 @@ SRC.ZUI_NUSA_FLIGHT_O4 = { main: '' };
 
 // form-based objects of the flight app: authorizations, IAM, communication, configuration
 const IAMPKG = 'ZNUSA_FLIGHT_IAM';
-SRC.ZNUSA_CARRIER_ID = { main: demoXml('DTEL', 'ZNUSA_CARRIER_ID', 'Nusa: airline code', 'ZNUSA_FLIGHT', `<dtel:typeInformation dtel:category="Predefined type" dtel:dataType="CHAR" dtel:length="3" dtel:decimals="0"/>
-  <dtel:fieldLabels>
-    <dtel:label dtel:kind="Short" dtel:length="10" dtel:text="Airline"/>
-    <dtel:label dtel:kind="Medium" dtel:length="20" dtel:text="Airline code"/>
-    <dtel:label dtel:kind="Long" dtel:length="40" dtel:text="Airline code (IATA)"/>
-    <dtel:label dtel:kind="Heading" dtel:length="55" dtel:text="Airline"/>
-  </dtel:fieldLabels>`) };
+SRC.ZNUSA_CARRIER_ID = { main: demoDtel('ZNUSA_CARRIER_ID', 'Nusa: airline code', 'ZNUSA_FLIGHT', { kind: 'domain', typeName: '/DMO/CARRIER_ID', dataType: 'CHAR', length: 3, labels: ['Airline', 'Airline code', 'Airline code (IATA)', 'Airline'], searchHelp: '/DMO/H_CARRIER', parameter: '/DMO/CAR' }) };
+SRC.ZNUSA_STATUS = { main: demoDoma('ZNUSA_STATUS', 'Nusa: travel status', 'ZNUSA_FLIGHT', { dataType: 'CHAR', length: 1, values: [['O', 'Open'], ['A', 'Accepted'], ['X', 'Cancelled']] }) };
 SRC.ZNUSA_CARR = { main: demoXml('AUTH', 'ZNUSA_CARR', 'Nusa: airline', IAMPKG, '<auth:general auth:dataElement="ZNUSA_CARRIER_ID" auth:checkTable="/DMO/CARRIER" auth:orgLevel="false"/>') };
 SRC.ZNUSA_FLT = { main: demoXml('SUSO', 'ZNUSA_FLT', 'Nusa: flights by airline', IAMPKG, `<suso:general suso:objectClass="ZNUS" suso:accessCategory="Read and write"/>
   <suso:fields>
@@ -277,13 +272,14 @@ const DESC: Record<string, [ObjType, string]> = {
   ZUI_NUSA_FLIGHT: ['SRVD', 'Nusa: flight service'],
   ZUI_NUSA_FLIGHT_O4: ['SRVB', 'Nusa: flight service, OData V4 UI'],
   ZNUSA_CARRIER_ID: ['DTEL', 'Nusa: airline code'],
+  ZNUSA_STATUS: ['DOMA', 'Nusa: travel status'],
   ZNUSA_CARR: ['AUTH', 'Nusa: airline'],
   ZNUSA_FLT: ['SUSO', 'Nusa: flights by airline'],
   ZNUSA_FLIGHT_APP: ['SIA6', 'Nusa: manage flights'],
   ZNUSA_FLIGHT_CS: ['SCO1', 'Nusa: flight data for partners'],
   ZNUSA_CARRIER_BC: ['SMBC', 'Nusa: airline settings'],
 };
-const FORM_OBJECTS = ['ZNUSA_CARRIER_ID', 'ZNUSA_CARR', 'ZNUSA_FLT', 'ZNUSA_FLIGHT_APP', 'ZNUSA_FLIGHT_CS', 'ZNUSA_CARRIER_BC'];
+const FORM_OBJECTS = ['ZNUSA_CARRIER_ID', 'ZNUSA_STATUS', 'ZNUSA_CARR', 'ZNUSA_FLT', 'ZNUSA_FLIGHT_APP', 'ZNUSA_FLIGHT_CS', 'ZNUSA_CARRIER_BC'];
 
 const CONNS: Connection[] = [
   { id: 's4d', kind: 's4', sid: 'S4D', client: '100', user: 'DEVELOPER', url: 'https://s4d.nusa.internal:44300', language: 'EN', auth: 'basic', abapVersion: 'standard', favoritePackages: ['ZNUSA_FLIGHT'], transports: true, label: 'S/4HANA 2023 on-premise', runReports: true },
@@ -315,7 +311,21 @@ interface Persisted {
   pkgs?: Record<string, MPkg[]>; git?: Record<string, GitRepo[]>; favs?: Record<string, string[]>;
 }
 
-const STORE_KEY = 'nusa-adt-mock-v3';
+const STORE_KEY = 'nusa-adt-mock-v4';
+
+/** Standard objects the DEMO system offers in value helps. */
+const VH_STANDARD: [string, string, string][] = [
+  ['DOMA', 'XFELD', 'Checkbox'], ['DOMA', 'BOOLE', 'Boolean value (X = true)'], ['DOMA', 'CHAR1', 'Single-character flag'],
+  ['DOMA', 'LAND1', 'Country key'], ['DOMA', 'WAERS', 'Currency key'], ['DOMA', 'MANDT', 'Client'], ['DOMA', '/DMO/CARRIER_ID', 'Airline code'],
+  ['DOMA', '/DMO/CONNECTION_ID', 'Flight connection number'], ['DOMA', '/DMO/STATUS', 'Booking status'],
+  ['DTEL', 'ABAP_BOOLEAN', 'Boolean (abap_true / abap_false)'], ['DTEL', 'MANDT', 'Client'], ['DTEL', 'LAND1', 'Country key'],
+  ['DTEL', 'WAERS', 'Currency key'], ['DTEL', '/DMO/CARRIER_ID', 'Airline code'], ['DTEL', '/DMO/CONNECTION_ID', 'Flight connection number'],
+  ['TABL', '/DMO/CARRIER', 'Airline'], ['TABL', '/DMO/FLIGHT', 'Flight'], ['TABL', '/DMO/CONNECTION', 'Flight connection'], ['TABL', 'T005', 'Countries'], ['TABL', 'TCURC', 'Currency codes'],
+  ['TTYP', 'STRING_TABLE', 'Table of strings'], ['SHLP', 'H_T005', 'Countries'], ['SHLP', 'H_TCURC', 'Currencies'], ['SHLP', '/DMO/H_CARRIER', 'Airlines'],
+  ['PARA', 'LND', 'Country'], ['PARA', 'FWS', 'Currency'], ['PARA', '/DMO/CAR', 'Airline'],
+  ['CLAS', 'CL_ABAP_CONTEXT_INFO', 'Context information of the session'], ['INTF', 'IF_OO_ADT_CLASSRUN', 'Run a class as console application'],
+  ['SUSO', 'S_START', 'Start of apps and services'], ['AUTH', 'ACTVT', 'Activity'],
+];
 
 export class MockBackend implements Backend {
   readonly id = 'mock';
@@ -428,6 +438,14 @@ export class MockBackend implements Backend {
       packages: this.pkgList(conn).filter(p => p.parent === pkg.toUpperCase()).map(p => ({ name: p.name, desc: p.desc })),
       objects: this.all(conn).filter(o => o.ref.pkg === pkg).map(o => ({ ...o.ref })),
     };
+  }
+
+  async valueHelpObjects(conn: string, query: string, types: string[]) {
+    await wait(80);
+    const re = new RegExp('^' + (query.trim() || '*').toUpperCase().replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + (query.includes('*') ? '$' : ''));
+    const own = [...this.objs.entries()].filter(([k]) => k.startsWith(conn + '|')).map(([, o]) => ({ name: o.ref.name, desc: o.ref.desc, type: o.ref.type as string, pkg: o.ref.pkg }));
+    return [...own, ...VH_STANDARD.map(([type, name, desc]) => ({ name, desc, type, pkg: 'SAP' }))]
+      .filter(o => types.includes(o.type) && re.test(o.name)).slice(0, 50);
   }
 
   async searchPackages(conn: string, query: string): Promise<PkgRef[]> {

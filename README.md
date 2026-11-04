@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="src-tauri/icons/128x128.png" width="88" alt="Nusa Studio logo">
+<img src="docs/logo.svg" width="88" alt="Nusa Studio logo">
 
 # Nusa Studio
 
@@ -63,7 +63,9 @@ Where Eclipse ADT is still ahead: the debugger, refactorings such as rename and 
 - Project Explorer with favorite packages, subpackages and `$TMP`, object search
 - New packages with software component, transport layer and application component value helps
 - New objects grouped like Eclipse: classes, interfaces, programs, database tables, CDS data definitions, metadata extensions, access controls, behavior definitions, service definitions and service bindings
-- **Authorizations, Identity and Access Management, Cloud Communication Management, Business Configuration Management**, application jobs and dictionary objects: authorization fields and objects, default values and variants, IAM apps, business catalogs and role templates, restriction types and fields, communication scenarios, inbound and outbound services, business configuration objects, data elements, domains, table types, message classes, number range and application log objects. They open in a form editor (fields and tables, with an XML view) and save, lock, record in transports and activate like source code
+- **Authorizations, Identity and Access Management, Cloud Communication Management, Business Configuration Management**, application jobs and dictionary objects: authorization fields and objects, default values and variants, IAM apps, business catalogs and role templates, restriction types and fields, communication scenarios, inbound and outbound services, business configuration objects, data elements, domains, table types, message classes, number range and application log objects. They open in a form editor and save, lock, record in transports and activate like source code
+- **Form editors laid out like Eclipse**: data elements (Data Type with category choices, built-in types with their length rules, Field Labels with character counters, Additional Properties with search help, parameter ID and change document) and domains (Format, Output Characteristics, Value Range with fixed values and value table). Other types get the same look, built from the object's own structure; nothing is hidden, and an XML view is always one click away
+- **Value help** on fields that name repository objects (`Ctrl+Space` or the search button): domains, data elements, tables, search helps, parameters, classes, authorization objects and more, searched in the connected system
 - Any other object type in a package is listed with the system's own folder name and can be viewed
 - Service binding editor with **Publish / Unpublish** for OData V2 and V4, and the service URL
 - Lock, save inactive, activate, activate all inactive objects, delete objects
@@ -98,6 +100,13 @@ Where Eclipse ADT is still ahead: the debugger, refactorings such as rename and 
 <summary><b>Light theme and Transport Organizer</b></summary>
 
 ![Nusa Studio in light mode with the Transport Organizer](docs/screenshot-light.png)
+
+</details>
+
+<details>
+<summary><b>Data element laid out like Eclipse</b></summary>
+
+![Data element with category choices, domain value help and field labels](docs/screenshot-dtel.png)
 
 </details>
 
@@ -170,7 +179,7 @@ To work on a real system, open **Systems** (the server icon at the bottom of the
 | Type | What to enter |
 |---|---|
 | **S/4HANA or NetWeaver** | URL such as `https://host:44300` (HTTPS port from transaction `SMICM` → Services), client and user. The password is asked once and kept in the keychain. Systems with SAML or Kerberos can use *Browser logon* instead. |
-| **S/4HANA Cloud Public Edition** | The address of the developer extensibility system as you open it in the browser, such as `https://my123456.s4hana.cloud.sap` (a launchpad link with `/ui#Shell-home` works too, and so does the `-api` URL). The browser opens and you log on as in the Fiori launchpad; Nusa Studio then works against `my123456-api.s4hana.cloud.sap`. |
+| **S/4HANA Cloud Public Edition** | The address of the developer extensibility system as you open it in the browser, such as `https://my123456.s4hana.cloud.sap` (a launchpad link with `/ui#Shell-home` works too, and so does the `-api` URL). The browser opens and you log on as in the Fiori launchpad; Nusa Studio then works against `my123456-api.s4hana.cloud.sap`. While it waits, the window shows the logon link with **Copy link**, **Open again** and **Cancel**, so you can use another browser or profile. |
 | **BTP ABAP Environment** | Either the service key JSON (OAuth, the token refreshes on its own) or just the system URL, such as `https://<id>.abap.eu10.hana.ondemand.com`, with *Browser logon*. |
 | **Local runner** | The runner's URL, for example `http://localhost:7777`. See [docs/RUNNER-PROTOCOL.md](docs/RUNNER-PROTOCOL.md). |
 
@@ -310,7 +319,7 @@ Nusa Studio is a preview. What has been verified so far:
 
 | Area | Status |
 |---|---|
-| Workbench UI end to end (DEMO system, real editor) | 26 scenarios, including preview tabs, collapse all, Format Document, the IAM app form and creating a communication scenario; edit, save, activate, completion while typing, packages, new objects, service binding publish, data preview, RAP generator, ABAP Cleaner, abapGit, compare and local history, draft recovery, multi-cursor and line editing, systems, themes, phone width |
+| Workbench UI end to end (DEMO system, real editor) | 28 scenarios, including the data element and domain forms with value help, preview tabs, collapse all, Format Document, the IAM app form and creating a communication scenario; edit, save, activate, completion while typing, packages, new objects, service binding publish, data preview, RAP generator, ABAP Cleaner, abapGit, compare and local history, draft recovery, multi-cursor and line editing, systems, themes, phone width |
 | Desktop shell against an in-memory ADT server | tested: title bar, error pages, save with transport, activate, session restore |
 | ABAP analysis, formatter, cleaner, RAP generator, diff, object types, completion contexts | 60 unit tests; the formatter is checked to keep every token of the sample sources |
 | ADT response parsing and edit cycle | tested against recorded payload shapes and an in-memory ADT server |

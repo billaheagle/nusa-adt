@@ -38,3 +38,13 @@ export class TauriConnStore implements ConnStore {
   remove(id: string) { return invoke<void>('delete_connection', { id }); }
   resetSession(id: string) { return invoke<void>('reset_session', { id }); }
 }
+
+/** Browser logon in the desktop app: the link while it waits, and ways to reopen or cancel it. */
+export const desktopLogon = {
+  listen(cb: (e: { state: 'waiting' | 'done'; url: string }) => void) {
+    const ev = (window as unknown as { __TAURI__?: { event?: { listen(n: string, f: (e: { payload: unknown }) => void): Promise<unknown> } } }).__TAURI__?.event;
+    ev?.listen('browser-logon', e => cb(e.payload as { state: 'waiting' | 'done'; url: string })).catch(() => undefined);
+  },
+  cancel() { return invoke<void>('cancel_logon'); },
+  reopen() { return invoke<void>('reopen_logon'); },
+};

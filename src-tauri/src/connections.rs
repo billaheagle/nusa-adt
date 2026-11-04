@@ -46,6 +46,20 @@ pub struct Connection {
     pub allow_self_signed: Option<bool>,
 }
 
+impl Connection {
+    /// True when `other` reaches the system differently, so an open session (cookies,
+    /// CSRF token, browser logon) no longer fits. Favorites and the label do not count.
+    pub fn session_differs(&self, other: &Connection) -> bool {
+        self.kind != other.kind
+            || self.url != other.url
+            || self.client != other.client
+            || self.user != other.user
+            || self.language != other.language
+            || self.auth != other.auth
+            || self.allow_self_signed != other.allow_self_signed
+    }
+}
+
 /// Portable mode: when the executable's name contains "portable" (or a `portable.txt`
 /// file sits next to it), settings live in `nusa-adt-data` beside the executable
 /// instead of the user profile, so the app can run from a USB stick or Downloads.

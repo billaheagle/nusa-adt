@@ -428,6 +428,58 @@ await step('form screens: data element, authorization object, light theme', asyn
   await shot('17-binding');
 });
 
+await step('data element like Eclipse: category, built-in type rules, value help, field labels', async () => {
+  await page.keyboard.press('Control+Shift+A');
+  await page.keyboard.type('ZNUSA_CARRIER_ID', { delay: 5 });
+  await page.waitForTimeout(400);
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('.of-head .of-kicker >> text=Data Element');
+  for (const t of ['Data Type', 'Field Labels', 'Additional Properties']) await page.waitForSelector(`.of-card h2 >> text="${t}"`);
+  await page.waitForSelector('.of-row:has(.of-label:text-is("Domain")) input[value="/DMO/CARRIER_ID"]');
+  if (!(await page.$('.of-row.ro:has(.of-label:text-is("Data type"))'))) throw new Error('data type should be read-only for a domain');
+  await shot('18-dtel-domain');
+  // switch to a predefined type: data type becomes a choice, DATS fixes the length
+  await page.click('.of-radio:has-text("Predefined type")');
+  await page.waitForSelector('.of-row:not(.ro):has(.of-label:text-is("Data type")) select');
+  await page.selectOption('.of-row:has(.of-label:text-is("Data type")) select', 'DATS');
+  await page.waitForSelector('.of-row.ro:has(.of-label:text-is("Length")) >> text="8"');
+  const xml1 = await page.evaluate(() => document.querySelector('.CodeMirror').CodeMirror.getValue());
+  if (!/<dtel:typeKind>predefinedAbapType</.test(xml1) || !/<dtel:dataTypeLength>000008</.test(xml1) || !/<dtel:typeName\/>|<dtel:typeName><\/dtel:typeName>/.test(xml1)) throw new Error('xml ' + xml1.slice(0, 900));
+  // value help for the search help
+  await page.click('.of-row:has(.of-label:text-is("Search help")) [data-act="of-vh"]');
+  await page.waitForSelector('.vh-pop .vh-list li[data-i]');
+  await page.keyboard.type('H_T', { delay: 10 });
+  await page.waitForSelector('.vh-pop li >> text=H_T005');
+  await shot('19-value-help');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.querySelector('[data-at="searchHelp"]')?.value === 'H_T005');
+  if (!/<dtel:searchHelp>H_T005</.test(await page.evaluate(() => document.querySelector('.CodeMirror').CodeMirror.getValue()))) throw new Error('search help not in xml');
+  // field label counter follows the length
+  const short = page.locator('[data-label-of="short"]');
+  await short.fill('Airline code');
+  if (await short.inputValue() !== 'Airline co') throw new Error('maxlength ' + await short.inputValue());
+  await page.waitForSelector('.of-counter >> text="10 / 10"');
+  await shot('20-dtel-edited');
+});
+
+await step('domain like Eclipse: format, output, fixed values', async () => {
+  await page.keyboard.press('Control+Shift+A');
+  await page.keyboard.type('ZNUSA_STATUS', { delay: 5 });
+  await page.waitForTimeout(400);
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('.of-head .of-kicker >> text=Domain');
+  for (const t of ['Format', 'Output Characteristics', 'Value Range']) await page.waitForSelector(`.of-card h2 >> text="${t}"`);
+  const before = (await page.$$('#of-sec-2 tbody tr')).length;
+  await page.click('[data-act="xf-add-row"]');
+  await page.waitForFunction(n => document.querySelectorAll('#of-sec-2 tbody tr').length === n + 1, before);
+  const xml = await page.evaluate(() => document.querySelector('.CodeMirror').CodeMirror.getValue());
+  if (!/<doma:position>0004<\/doma:position>/.test(xml)) throw new Error('position not numbered');
+  await page.setViewportSize({ width: 1700, height: 900 });
+  await page.waitForTimeout(200);
+  await shot('21-doma-wide');
+  await page.setViewportSize({ width: 1440, height: 880 });
+});
+
 await step('phone width has no horizontal overflow', async () => {
   await page.setViewportSize({ width: 400, height: 800 });
   await page.waitForTimeout(200);

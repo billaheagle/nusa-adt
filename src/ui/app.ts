@@ -6,7 +6,7 @@ import { systemHosts, systemUrl } from '../core/sysurl';
 import { addSnapshot, diffLines, diffStats, hunks, Snapshot } from '../core/diff';
 import { diagReport, logDiag } from '../core/diag';
 import { formatAbap, formatCds, KeywordCase } from '../core/format';
-import { addXmlRow, removeXmlRow, renderXmlForm, setXmlValue } from './xmlform';
+import { addLayoutRow, addXmlRow, layoutEffects, removeXmlRow, renderXmlForm, setXmlValue } from './xmlform';
 import {
   AtcFinding, Backend, BindingInfo, Breakpoint, Connection, CreateExtra, DebugState, DebugVar, GitRepo, GROUPS, Hit, Include,
   INCLUDE_LABEL, isCdsLike, isSourceType, Location, ObjRef, ObjState, ObjType, PkgRef, PreviewResult, Problem, Proposal, RunResult, StepKind,
@@ -75,7 +75,13 @@ const json = <T>(k: string, d: T): T => { try { const v = store.get(k); return v
 const TAURI = (window as any).__TAURI__ as { window?: { getCurrentWindow(): any } } | undefined;
 const IS_MAC = /Mac/i.test(navigator.platform || navigator.userAgent);
 
-export async function startApp(backend: Backend, opts: { brand?: string; prototype?: boolean } = {}) {
+export interface LogonBridge {
+  listen(cb: (e: { state: 'waiting' | 'done'; url: string }) => void): void;
+  cancel(): Promise<void>;
+  reopen(): Promise<void>;
+}
+
+export async function startApp(backend: Backend, opts: { brand?: string; prototype?: boolean; logon?: LogonBridge } = {}) {
   const settings: Settings = json<Settings>('nusa-adt-settings', {
     editorFont: 13, autoComplete: true, restoreTabs: true, cleanerRules: DEFAULT_RULES,
     ext: { preview: true, abapgit: true, cleaner: true, rapgen: true, docs: true, outline: true },
@@ -251,6 +257,33 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     while (box.children.length > 3) box.firstElementChild?.remove();
     setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 250); }, ms);
   }
+  // ------------------------------------------------------------------ browser logon card
+  // While the system waits for the browser, show the link so it can be copied into another
+  // browser or profile on this computer, opened again, or cancelled.
+  opts.logon?.listen(ev => {
+    document.getElementById('logonCard')?.remove();
+    if (ev.state !== 'waiting') return;
+    const c = conn();
+    const card = document.createElement('div');
+    card.id = 'logonCard';
+    card.className = 'logon-card';
+    card.setAttribute('role', 'status');
+    card.innerHTML = `<div class="lc-ic">${ic('lock')}</div>
+      <div class="lc-main"><b>Log on to ${esc(c.sid)} in your browser</b>
+        <p>The logon page opened in your default browser. To use another browser or profile on this computer, copy the link and open it there.</p>
+        <code class="lc-url" title="${esc(ev.url)}">${esc(ev.url)}</code>
+        <div class="lc-actions"><button class="btn small primary" data-lc="copy">Copy link</button><button class="btn small" data-lc="open">Open again</button><button class="btn small ghost" data-lc="cancel">Cancel</button></div>
+      </div>`;
+    card.onclick = async (e) => {
+      const b = (e.target as HTMLElement).closest('[data-lc]') as HTMLElement | null;
+      if (!b) return;
+      if (b.dataset.lc === 'copy') await copy(ev.url, 'Copied the logon link');
+      if (b.dataset.lc === 'open') opts.logon!.reopen().catch(er => fail(er, 'Opening the logon page'));
+      if (b.dataset.lc === 'cancel') { await opts.logon!.cancel().catch(() => undefined); card.remove(); }
+    };
+    document.body.appendChild(card);
+  });
+
   const fail = (e: unknown, what?: string) => toast(what ? `${what} failed: ${msg(e)}` : msg(e), 'error', 7000);
   window.addEventListener('unhandledrejection', (e) => { e.preventDefault(); fail(e.reason); });
 
@@ -903,22 +936,45 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       if (!d) { pane.innerHTML = '<div class="xf"><p class="muted"><i class="spin"></i>Loading</p></div>'; return; }
       const ro = !!TYPE_INFO[t.ref.type].readOnly || !!t.ref.lockedBy;
       pane.innerHTML = renderXmlForm(d.getValue(), {
-        readOnly: ro, typeLabel: typeLabel(t.ref), glyph: glyph(t.ref.type).replace('class="glyph', 'class="glyph big'),
+        type: t.ref.type, readOnly: ro, typeLabel: typeLabel(t.ref), glyph: glyph(t.ref.type).replace('class="glyph', 'class="glyph big'),
         status: isDirty(t) ? { text: 'Unsaved changes', tone: 'warn' } : t.ref.inactive ? { text: 'Inactive', tone: 'warn' } : { text: 'Active', tone: 'ok' },
         note: TYPE_INFO[t.ref.type].readOnly ? 'Nusa Studio shows this object type read-only. Change it in Eclipse ADT or SAP GUI.'
           : t.ref.lockedBy ? `${t.ref.lockedBy} is editing this object, so it is read-only for you.` : undefined,
       });
-      const apply = (el: HTMLInputElement | HTMLTextAreaElement) => {
-        const v = el instanceof HTMLInputElement && el.type === 'checkbox' ? String(el.checked) : el.value;
-        if (el instanceof HTMLInputElement && el.type === 'checkbox') { const lbl = el.parentElement?.querySelector('span'); if (lbl) lbl.textContent = el.checked ? 'On' : 'Off'; }
-        try { d.setValue(setXmlValue(d.getValue(), el.dataset.xpath as string, v)); } catch (e) { fail(e); }
+      type Ctl = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+      const apply = (el: Ctl) => {
+        const isBox = el instanceof HTMLInputElement && el.type === 'checkbox';
+        if (el instanceof HTMLInputElement && el.type === 'radio' && !el.checked) return;
+        let v = isBox ? String((el as HTMLInputElement).checked) : el.value;
+        if (isBox) { const lbl = el.parentElement?.querySelector('span'); if (lbl) lbl.textContent = (el as HTMLInputElement).checked ? 'On' : 'Off'; }
+        // numbers keep the zero-padded width the system uses ("000010")
+        const w = +(el.dataset.pad || 0);
+        if (w && /^\d+$/.test(v)) v = v.padStart(w, '0');
+        let rerender = !!el.dataset.rr;
+        try {
+          let xml = setXmlValue(d.getValue(), el.dataset.xpath as string, v);
+          if (el.dataset.at) { const r = layoutEffects(t.ref.type, xml, el.dataset.at, v); xml = r.xml; rerender = rerender || r.rerender; }
+          d.setValue(xml);
+        } catch (e) { fail(e); return; }
+        // field label counters follow the text and the chosen length
+        if (el.dataset.labelOf) {
+          const cnt = el.parentElement?.querySelector('.of-counter');
+          const max = +(el.getAttribute('maxlength') || 0);
+          if (cnt) { cnt.textContent = `${el.value.length}${max ? ' / ' + max : ''}`; cnt.classList.toggle('over', !!max && el.value.length > max); }
+        }
+        if (el.dataset.lenFor) {
+          const lab = pane.querySelector<HTMLInputElement>(`[data-label-of="${el.dataset.lenFor}"]`);
+          if (lab && /^\d+$/.test(el.value) && +el.value > 0) { lab.maxLength = +el.value; lab.dispatchEvent(new Event('counter')); const cnt = lab.parentElement?.querySelector('.of-counter'); if (cnt) { cnt.textContent = `${lab.value.length} / ${el.value}`; cnt.classList.toggle('over', lab.value.length > +el.value); } }
+        }
+        if (rerender) { const y = pane.scrollTop; renderPane(); pane.scrollTop = y; return; }
         const badge = pane.querySelector('.of-badges .pill');
         if (badge) { badge.textContent = 'Unsaved changes'; badge.className = 'pill p-warn'; }
       };
-      pane.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('[data-xpath]').forEach(el => {
-        if (el.tagName === 'BUTTON') return;
-        if (el instanceof HTMLInputElement && el.type === 'checkbox') el.onchange = () => apply(el);
+      pane.querySelectorAll<Ctl>('input[data-xpath], textarea[data-xpath], select[data-xpath]').forEach(el => {
+        const box = el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio');
+        if (box || el instanceof HTMLSelectElement) el.onchange = () => apply(el);
         else el.oninput = () => apply(el);
+        if (el.dataset.vh) el.onkeydown = (e) => { if ((e.ctrlKey || e.metaKey) && e.key === ' ') { e.preventDefault(); valueHelp(el as HTMLInputElement); } };
       });
       return;
     }
@@ -1936,6 +1992,67 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   }
 
   // ------------------------------------------------------------------ systems
+  // ------------------------------------------------------------------ value help (F4 / Ctrl+Space)
+  const VH_LABEL: Record<string, string> = {
+    DOMA: 'Domains', DTEL: 'Data elements', TABL: 'Tables and structures', TTYP: 'Table types', SHLP: 'Search helps', PARA: 'SET/GET parameters',
+    CLAS: 'Classes', INTF: 'Interfaces', SRVB: 'Service bindings', SRVD: 'Service definitions', SUSO: 'Authorization objects', AUTH: 'Authorization fields',
+    SIA6: 'IAM apps', SIA1: 'Business catalogs', SCO1: 'Communication scenarios', DDLS: 'CDS entities', DEVC: 'Packages',
+  };
+  function valueHelp(input: HTMLInputElement) {
+    document.getElementById('vhPop')?.remove();
+    const types = (input.dataset.vh || '').split(',').filter(Boolean);
+    if (!types.length) return;
+    const pop = document.createElement('div');
+    pop.id = 'vhPop';
+    pop.className = 'vh-pop';
+    pop.setAttribute('role', 'dialog');
+    pop.innerHTML = `<div class="vh-head">${ic('search')}<input class="vh-q" aria-label="Search" spellcheck="false" autocomplete="off" value="${esc(input.value)}" placeholder="Name or pattern, e.g. Z*"><span class="vh-kind">${esc(types.map(t => VH_LABEL[t] || t).join(' · '))}</span></div>
+      <ul class="vh-list" role="listbox"></ul><div class="vh-foot"><kbd>↑</kbd><kbd>↓</kbd> choose · <kbd>Enter</kbd> take · <kbd>Esc</kbd> close</div>`;
+    document.body.appendChild(pop);
+    const r = input.getBoundingClientRect();
+    const w = Math.max(r.width, 380);
+    pop.style.width = `${Math.min(w, window.innerWidth - 24)}px`;
+    pop.style.left = `${Math.max(12, Math.min(r.left, window.innerWidth - w - 12))}px`;
+    const below = window.innerHeight - r.bottom > 300;
+    pop.style.top = below ? `${r.bottom + 4}px` : '';
+    pop.style.bottom = below ? '' : `${window.innerHeight - r.top + 4}px`;
+    const q = pop.querySelector('.vh-q') as HTMLInputElement;
+    const list = pop.querySelector('.vh-list') as HTMLElement;
+    let items: { name: string; desc: string; type: string; pkg?: string }[] = [];
+    let sel = 0;
+    let seq = 0;
+    const draw = () => {
+      list.innerHTML = items.map((o, i) => `<li role="option" aria-selected="${i === sel}" class="${i === sel ? 'on' : ''}" data-i="${i}"><span class="vh-name mono">${esc(o.name)}</span><span class="vh-desc">${esc(o.desc)}</span>${types.length > 1 ? `<span class="vh-type">${esc(o.type)}</span>` : ''}</li>`).join('')
+        || `<li class="vh-empty">${q.value ? 'Nothing found. Use * as a wildcard, for example Z*' : 'Type a name or a pattern'}</li>`;
+      list.querySelector('.on')?.scrollIntoView({ block: 'nearest' });
+    };
+    const search = debounce(async () => {
+      const my = ++seq;
+      list.innerHTML = '<li class="vh-empty"><i class="spin"></i>Searching</li>';
+      try { const res = await backend.valueHelpObjects(S.conn, q.value, types); if (my === seq) { items = res; sel = 0; draw(); } }
+      catch (e) { if (my === seq) list.innerHTML = `<li class="vh-empty sys-err">${esc(msg(e))}</li>`; }
+    }, 180);
+    const take = (i: number) => {
+      const o = items[i]; if (!o) return;
+      input.value = o.name;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      close(); input.focus();
+    };
+    const close = () => { pop.remove(); document.removeEventListener('mousedown', outside, true); };
+    const outside = (e: MouseEvent) => { if (!pop.contains(e.target as Node)) close(); };
+    document.addEventListener('mousedown', outside, true);
+    q.oninput = search;
+    q.onkeydown = (e) => {
+      if (e.key === 'ArrowDown') { sel = Math.min(items.length - 1, sel + 1); draw(); e.preventDefault(); }
+      else if (e.key === 'ArrowUp') { sel = Math.max(0, sel - 1); draw(); e.preventDefault(); }
+      else if (e.key === 'Enter') { take(sel); e.preventDefault(); }
+      else if (e.key === 'Escape') { close(); input.focus(); e.preventDefault(); e.stopPropagation(); }
+    };
+    list.onmousedown = (e) => { const li = (e.target as HTMLElement).closest('[data-i]') as HTMLElement | null; if (li) { e.preventDefault(); take(+(li.dataset.i as string)); } };
+    q.focus(); q.select();
+    search();
+  }
+
   // ------------------------------------------------------------------ diagnostics
   function diagText(id: string): string {
     const c = S.conns.find(x => x.id === id) || conn();
@@ -2505,6 +2622,12 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       case 'set-theme': setTheme(d.id as ThemePref); break;
       case 'palette-obj': openPalette('obj'); break;
       case 'switch': await switchConn(d.id as string); break;
+      case 'of-vh': { const inp = document.getElementById(d.for as string) as HTMLInputElement | null; if (inp) valueHelp(inp); break; }
+      case 'xf-add-row': {
+        const t = cur(); const doc = t && docs.get(docKey(t, 'main'));
+        if (doc) { try { doc.setValue(addLayoutRow(doc.getValue(), d.at as string, d.row as string, (d.cols as string).split(','), (d.num as string) || undefined)); renderPane(); } catch (er) { fail(er); } }
+        break;
+      }
       case 'of-goto': document.getElementById(d.id as string)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); break;
       case 'xml-mode': { const t = cur(); if (t && isForm(t)) { t.raw = d.id === 'xml'; renderAll(); if (t.raw) setTimeout(() => { cm.refresh(); cm.focus(); }, 0); } break; }
       case 'xf-add': case 'xf-del': {

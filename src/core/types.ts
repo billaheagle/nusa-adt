@@ -151,6 +151,8 @@ export interface Backend {
   /** Subpackages and objects of a package, for the lazily expanded explorer. */
   packageContents(conn: string, pkg: string): Promise<{ packages: PkgRef[]; objects: ObjState[] }>;
   searchPackages(conn: string, query: string): Promise<PkgRef[]>;
+  /** Value help: repository objects of the given types (DOMA, DTEL, SHLP, …) matching a pattern. */
+  valueHelpObjects(conn: string, query: string, types: string[]): Promise<{ name: string; desc: string; type: string; pkg?: string }[]>;
   valueHelp(conn: string, kind: 'softwarecomponents' | 'transportlayers'): Promise<ValueHelpItem[]>;
   createPackage(conn: string, p: NewPackage, transport?: string): Promise<PkgRef>;
   deleteObject(conn: string, obj: ObjRef, transport?: string): Promise<void>;

@@ -29,8 +29,25 @@ async fn save_connection(
     conn: Connection,
     secret: Option<String>,
 ) -> Result<(), String> {
-    state.sessions.lock().await.remove(&conn.id); // new settings, new session
+    // Only a change in how the system is reached needs a new session. Saving favorites
+    // must not drop it: with browser logon that would open the browser again.
+    let old = connections::list(&app)?
+        .into_iter()
+        .find(|c| c.id == conn.id);
+    if secret.is_some() || old.map(|o| o.session_differs(&conn)).unwrap_or(true) {
+        state.sessions.lock().await.remove(&conn.id);
+    }
     connections::save(&app, conn, secret)
+}
+
+#[tauri::command]
+fn cancel_logon() {
+    oauth::cancel_logon();
+}
+
+#[tauri::command]
+fn reopen_logon(app: tauri::AppHandle) -> Result<(), String> {
+    oauth::reopen_logon(&app)
 }
 
 #[tauri::command]
@@ -80,6 +97,8 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
+            cancel_logon,
+            reopen_logon,
             list_connections,
             save_connection,
             delete_connection,

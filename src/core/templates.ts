@@ -96,7 +96,71 @@ const xe = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace
  * XML documents of form-based objects in the DEMO system. Real systems define their own
  * formats; Nusa Studio reads and writes those as they come and never relies on these shapes.
  */
+export interface DtelSpec { kind?: string; typeName?: string; dataType?: string; length?: number; decimals?: number; labels?: [string, string, string, string]; searchHelp?: string; parameter?: string }
+const n6 = (n: number) => String(n).padStart(6, '0');
+
+/** Data element in the shape the ADT data element service uses (blue:wbobj with dtel:dataElement). */
+export function demoDtel(name: string, desc: string, pkg: string, o: DtelSpec = {}): string {
+  const [s, m, l, h] = o.labels || [desc.slice(0, 10), desc.slice(0, 20), desc.slice(0, 40), desc.slice(0, 55)];
+  const el = (k: string, v = '') => v ? `    <dtel:${k}>${xe(v)}</dtel:${k}>` : `    <dtel:${k}/>`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<blue:wbobj xmlns:blue="http://www.sap.com/wbobj/dictionary/dtel" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="${xe(name.toUpperCase())}" adtcore:type="DTEL/DE" adtcore:description="${xe(desc)}" adtcore:language="EN" adtcore:masterLanguage="EN" adtcore:responsible="DEVELOPER">
+  <adtcore:packageRef adtcore:name="${xe(pkg.toUpperCase())}"/>
+  <dtel:dataElement xmlns:dtel="http://www.sap.com/adt/dictionary/dataelements">
+${[
+    el('typeKind', o.kind || 'predefinedAbapType'), el('typeName', o.typeName), el('dataType', o.dataType || 'CHAR'),
+    el('dataTypeLength', n6(o.length ?? 10)), el('dataTypeDecimals', n6(o.decimals ?? 0)),
+    el('shortFieldLabel', s), el('shortFieldLength', '10'), el('shortFieldMaxLength', '10'),
+    el('mediumFieldLabel', m), el('mediumFieldLength', '20'), el('mediumFieldMaxLength', '20'),
+    el('longFieldLabel', l), el('longFieldLength', '40'), el('longFieldMaxLength', '40'),
+    el('headingFieldLabel', h), el('headingFieldLength', '55'), el('headingFieldMaxLength', '55'),
+    el('searchHelp', o.searchHelp), el('searchHelpParameter'), el('setGetParameter', o.parameter), el('defaultComponentName'),
+    el('deactivateInputHistory', 'false'), el('changeDocument', 'false'), el('leftToRightDirection', 'false'), el('deactivateBIDIFiltering', 'false'),
+  ].join('\n')}
+  </dtel:dataElement>
+</blue:wbobj>
+`;
+}
+
+/** Domain in the shape the ADT domain service uses (doma:domain with doma:content). */
+export function demoDoma(name: string, desc: string, pkg: string, o: { dataType?: string; length?: number; decimals?: number; values?: [string, string][]; valueTable?: string; lowercase?: boolean } = {}): string {
+  const len = o.length ?? 1;
+  const fix = (o.values || []).map(([low, text], i) => `        <doma:fixValue>
+          <doma:position>${String(i + 1).padStart(4, '0')}</doma:position>
+          <doma:low>${xe(low)}</doma:low>
+          <doma:high/>
+          <doma:text>${xe(text)}</doma:text>
+        </doma:fixValue>`).join('\n');
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<doma:domain xmlns:doma="http://www.sap.com/dictionary/domain" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="${xe(name.toUpperCase())}" adtcore:type="DOMA/DD" adtcore:description="${xe(desc)}" adtcore:language="EN" adtcore:masterLanguage="EN" adtcore:responsible="DEVELOPER">
+  <adtcore:packageRef adtcore:name="${xe(pkg.toUpperCase())}"/>
+  <doma:content>
+    <doma:typeInformation>
+      <doma:datatype>${xe(o.dataType || 'CHAR')}</doma:datatype>
+      <doma:length>${n6(len)}</doma:length>
+      <doma:decimals>${n6(o.decimals ?? 0)}</doma:decimals>
+    </doma:typeInformation>
+    <doma:outputInformation>
+      <doma:length>${n6(len)}</doma:length>
+      <doma:style>00</doma:style>
+      <doma:conversionExit/>
+      <doma:signExists>false</doma:signExists>
+      <doma:lowercase>${o.lowercase ? 'true' : 'false'}</doma:lowercase>
+      <doma:ampmFormat>false</doma:ampmFormat>
+    </doma:outputInformation>
+    <doma:valueInformation>
+      <doma:valueTableRef adtcore:name="${xe(o.valueTable || '')}"/>
+      <doma:appendExists>false</doma:appendExists>
+      <doma:fixValues>${fix ? '\n' + fix + '\n      ' : ''}</doma:fixValues>
+    </doma:valueInformation>
+  </doma:content>
+</doma:domain>
+`;
+}
+
 export function demoXml(type: ObjType, name: string, desc: string, pkg: string, body?: string): string {
+  if (type === 'DTEL' && !body) return demoDtel(name, desc, pkg);
+  if (type === 'DOMA' && !body) return demoDoma(name, desc, pkg);
   const p = type.toLowerCase();
   const BODY: Partial<Record<ObjType, string>> = {
     DTEL: `<${p}:typeInformation ${p}:category="Predefined type" ${p}:dataType="CHAR" ${p}:length="10" ${p}:decimals="0"/>

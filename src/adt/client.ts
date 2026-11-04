@@ -3,7 +3,9 @@
 // session; this file only knows ADT URLs, payloads and responses.
 
 import { asxValues, attr, all, base64Utf8, encode, first, kid, kids, parseStart, parseXml, textOf, XEl } from './xml';
-import { Include, ObjRef, ObjType, Transport, TYPE_INFO } from '../core/types';
+import {
+  ADT_TYPE, BindingInfo, GitRepo, Include, NewPackage, ObjRef, ObjType, PkgRef, PreviewResult, Transport, TYPE_INFO, ValueHelpItem,
+} from '../core/types';
 
 export interface HttpRequest {
   method: 'GET' | 'POST' | 'PUT' | 'DELETE';
@@ -21,8 +23,7 @@ export class AdtError extends Error {
   constructor(message: string, readonly status: number, readonly type?: string) { super(message); }
 }
 
-export const ADT_TYPE: Record<string, ObjType> = { 'CLAS/OC': 'CLAS', 'INTF/OI': 'INTF', 'PROG/P': 'PROG', 'DDLS/DF': 'DDLS' };
-const ADT_TYPE_OF: Record<ObjType, string> = { CLAS: 'CLAS/OC', INTF: 'INTF/OI', PROG: 'PROG/P', DDLS: 'DDLS/DF' };
+export { ADT_TYPE };
 
 export interface AdtMessage { type: string; text: string; uri: string; line: number; col: number }
 export interface LockInfo { handle: string; transport?: string; isLocal: boolean }
@@ -81,13 +82,47 @@ export class AdtClient {
   }
 
   // ------------------------------------------------------------------ repository
-  async nodeStructure(pkg: string): Promise<ObjRef[]> {
+  async nodeStructure(pkg: string): Promise<{ packages: PkgRef[]; objects: ObjRef[] }> {
     const r = await this.req({
       method: 'POST', path: '/sap/bc/adt/repository/nodestructure',
       query: { parent_type: 'DEVC/K', parent_name: pkg, withShortDescriptions: 'true' },
       accept: 'application/vnd.sap.as+xml', contentType: 'application/vnd.sap.as+xml',
     });
     return parseNodeStructure(r.body, pkg);
+  }
+
+  async searchPackages(query: string, max = 50): Promise<PkgRef[]> {
+    const list = await this.searchObjects(query.includes('*') ? query : query + '*', 'DEVC/K', max);
+    return list.map(o => ({ name: o.name, desc: o.desc }));
+  }
+
+  async packageValueHelp(kind: 'softwarecomponents' | 'transportlayers'): Promise<ValueHelpItem[]> {
+    const r = await this.req({ method: 'GET', path: `/sap/bc/adt/packages/valuehelps/${kind}`, accept: 'application/*' });
+    return parseNamedItems(r.body);
+  }
+
+  async createPackage(p: NewPackage, user: string, transport?: string): Promise<void> {
+    const n = encode(p.name.toUpperCase());
+    const body = `<?xml version="1.0" encoding="UTF-8"?>
+<pak:package xmlns:pak="http://www.sap.com/adt/packages" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:description="${encode(p.desc)}" adtcore:name="${n}" adtcore:type="DEVC/K" adtcore:version="active" adtcore:responsible="${encode(user.toUpperCase())}">
+  <adtcore:packageRef adtcore:name="${n}"/>
+  <pak:attributes pak:packageType="${p.packageType}"/>
+  <pak:superPackage adtcore:name="${encode(p.superPackage.toUpperCase())}"/>
+  <pak:applicationComponent/>
+  <pak:transport>
+    <pak:softwareComponent pak:name="${encode(p.softwareComponent)}"/>
+    <pak:transportLayer pak:name="${encode(p.transportLayer)}"/>
+  </pak:transport>
+  <pak:translation/>
+  <pak:useAccesses/>
+  <pak:packageInterfaces/>
+  <pak:subPackages/>
+</pak:package>`;
+    await this.req({ method: 'POST', path: '/sap/bc/adt/packages', query: { corrNr: transport }, contentType: 'application/*', accept: 'application/*', body });
+  }
+
+  async deleteObject(uri: string, handle: string, transport?: string): Promise<void> {
+    await this.req({ method: 'DELETE', path: uri, query: { lockHandle: handle, corrNr: transport }, stateful: true });
   }
 
   async quickSearch(query: string, max = 50): Promise<ObjRef[]> {
@@ -160,20 +195,81 @@ export class AdtClient {
     await this.req({ method: 'POST', path: `${uri}/includes`, query: { lockHandle: handle, corrNr: transport }, stateful: true, contentType: 'application/*', body });
   }
 
-  async createObject(type: ObjType, name: string, desc: string, pkg: string, user: string, transport?: string): Promise<string> {
-    const n = encode(name.toUpperCase()), d = encode(desc), p = encode(pkg), u = encode(user);
+  async createObject(type: ObjType, name: string, desc: string, pkg: string, user: string, transport?: string, extra: { serviceDefinition?: string; bindingType?: 'V2' | 'V4'; category?: 'UI' | 'Web API' } = {}): Promise<string> {
+    const n = encode(name.toUpperCase()), d = encode(desc), p = encode(pkg), u = encode(user.toUpperCase());
     const core = 'xmlns:adtcore="http://www.sap.com/adt/core"';
-    const common = `adtcore:description="${d}" adtcore:name="${n}" adtcore:type="${ADT_TYPE_OF[type]}" adtcore:responsible="${u}"`;
+    const common = `adtcore:description="${d}" adtcore:name="${n}" adtcore:type="${TYPE_INFO[type].adtType}" adtcore:responsible="${u}" adtcore:masterLanguage="EN"`;
     const pkgRef = `<adtcore:packageRef adtcore:name="${p}"/>`;
+    const blue = (t: string) => `<blue:blueSource xmlns:blue="http://www.sap.com/wbobj/blue" ${core} ${common.replace(TYPE_INFO[type].adtType, t)}>${pkgRef}</blue:blueSource>`;
+    const v4 = (extra.bindingType ?? 'V4') === 'V4';
     const bodies: Record<ObjType, [string, string]> = {
       CLAS: ['/sap/bc/adt/oo/classes', `<class:abapClass xmlns:class="http://www.sap.com/adt/oo/classes" ${core} ${common} class:final="true" class:visibility="public">${pkgRef}<class:include adtcore:name="CLAS/OC" adtcore:type="CLAS/OC" class:includeType="testclasses"/><class:superClassRef/></class:abapClass>`],
       INTF: ['/sap/bc/adt/oo/interfaces', `<intf:abapInterface xmlns:intf="http://www.sap.com/adt/oo/interfaces" ${core} ${common}>${pkgRef}</intf:abapInterface>`],
       PROG: ['/sap/bc/adt/programs/programs', `<program:abapProgram xmlns:program="http://www.sap.com/adt/programs/programs" ${core} ${common}>${pkgRef}</program:abapProgram>`],
+      TABL: ['/sap/bc/adt/ddic/tables', blue('TABL/DT')],
       DDLS: ['/sap/bc/adt/ddic/ddl/sources', `<ddl:ddlSource xmlns:ddl="http://www.sap.com/adt/ddic/ddlsources" ${core} ${common}>${pkgRef}</ddl:ddlSource>`],
+      DDLX: ['/sap/bc/adt/ddic/ddlx/sources', `<ddlxsources:ddlxSource xmlns:ddlxsources="http://www.sap.com/adt/ddic/ddlxsources" ${core} ${common}>${pkgRef}</ddlxsources:ddlxSource>`],
+      DCLS: ['/sap/bc/adt/acm/dcl/sources', `<dclSource:dclSource xmlns:dclSource="http://www.sap.com/adt/acm/dclsources" ${core} ${common}>${pkgRef}</dclSource:dclSource>`],
+      BDEF: ['/sap/bc/adt/bo/behaviordefinitions', blue('BDEF/BDO')],
+      SRVD: ['/sap/bc/adt/ddic/srvd/sources', `<srvd:srvdSource xmlns:srvd="http://www.sap.com/adt/ddic/srvdsources" ${core} ${common} srvd:srvdSourceType="S">${pkgRef}</srvd:srvdSource>`],
+      SRVB: ['/sap/bc/adt/businessservices/bindings', `<srvb:serviceBinding xmlns:srvb="http://www.sap.com/adt/ddic/ServiceBindings" ${core} ${common} srvb:releaseSupported="false" srvb:published="false" srvb:bindingCreated="true">${pkgRef}<srvb:services srvb:name="${n}"><srvb:content srvb:version="0001"><srvb:serviceDefinition adtcore:name="${encode((extra.serviceDefinition || '').toUpperCase())}"/></srvb:content></srvb:services><srvb:binding srvb:type="ODATA" srvb:version="${v4 ? 'V4' : 'V2'}" srvb:category="${extra.category === 'Web API' ? '1' : '0'}"><srvb:implementation adtcore:name=""/></srvb:binding></srvb:serviceBinding>`],
     };
     const [path, xml] = bodies[type];
     await this.req({ method: 'POST', path, query: { corrNr: transport }, contentType: 'application/*', body: `<?xml version="1.0" encoding="UTF-8"?>${xml}` });
     return TYPE_INFO[type].adt + encodeURIComponent(name.toLowerCase());
+  }
+
+  // ------------------------------------------------------------------ business services
+  async bindingInfo(uri: string): Promise<BindingInfo> {
+    const r = await this.req({ method: 'GET', path: uri, accept: 'application/vnd.sap.adt.businessservices.servicebinding.v2+xml, application/*' });
+    return parseBinding(r.body);
+  }
+
+  async publishBinding(b: BindingInfo, publish: boolean): Promise<string> {
+    const svc = b.services[0];
+    const ver = b.odataVersion === 'V2' ? 'odatav2' : 'odatav4';
+    const r = await this.req({
+      method: 'POST', path: `/sap/bc/adt/businessservices/${ver}/${publish ? 'publishjobs' : 'unpublishjobs'}`,
+      query: { servicename: b.name, serviceversion: svc?.version || '0001' },
+      contentType: 'application/xml', accept: 'application/*',
+      body: `<?xml version="1.0" encoding="UTF-8"?><adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core"><adtcore:objectReference adtcore:type="SCGR" adtcore:name="${encode(b.name)}"/></adtcore:objectReferences>`,
+    });
+    const x = parseXml(r.body);
+    const sev = textOf(x, 'SEVERITY'), text = textOf(x, 'SHORT_TEXT') || textOf(x, 'LONG_TEXT');
+    if (/^(ERROR|E|A)$/i.test(sev)) throw new AdtError(text || 'Publishing failed', 400);
+    return text || (publish ? 'Service published' : 'Service unpublished');
+  }
+
+  // ------------------------------------------------------------------ data preview
+  async dataPreview(req: { entity?: string; sql?: string; rows: number }): Promise<PreviewResult> {
+    const started = Date.now();
+    const sql = req.sql || (req.entity ? `SELECT * FROM ${req.entity.toUpperCase()}` : '');
+    const r = await this.req({
+      method: 'POST',
+      path: req.entity && !req.sql ? '/sap/bc/adt/datapreview/ddic' : '/sap/bc/adt/datapreview/freestyle',
+      query: req.entity && !req.sql ? { rowNumber: String(req.rows), ddicEntityName: req.entity.toUpperCase() } : { rowNumber: String(req.rows) },
+      contentType: 'text/plain', accept: 'application/xml, application/vnd.sap.adt.datapreview.table.v1+xml', body: sql,
+    });
+    return { ...parseDataPreview(r.body), sql, ms: Date.now() - started };
+  }
+
+  // ------------------------------------------------------------------ abapGit (ADT abapGit service, BTP / S/4HANA Cloud / recent on-premise)
+  async gitRepos(): Promise<GitRepo[]> {
+    const r = await this.req({ method: 'GET', path: '/sap/bc/adt/abapgit/repos', accept: 'application/abapgit.adt.repos.v2+xml' });
+    return parseGitRepos(r.body);
+  }
+  private gitBody(x: { pkg?: string; url?: string; branch?: string; transport?: string; user?: string; password?: string }) {
+    const t = (k: string, v?: string) => v ? `<abapgitrepo:${k}>${encode(v)}</abapgitrepo:${k}>` : `<abapgitrepo:${k}/>`;
+    return `<?xml version="1.0" encoding="UTF-8"?><abapgitrepo:repository xmlns:abapgitrepo="http://www.sap.com/adt/abapgit/repositories">${t('branchName', x.branch)}${t('transportRequest', x.transport)}${t('package', x.pkg?.toUpperCase())}${t('url', x.url)}${t('remoteUser', x.user)}${t('remotePassword', x.password)}</abapgitrepo:repository>`;
+  }
+  async gitLink(x: { pkg: string; url: string; branch: string; transport?: string; user?: string; password?: string }): Promise<void> {
+    await this.req({ method: 'POST', path: '/sap/bc/adt/abapgit/repos', contentType: 'application/abapgit.adt.repo.v3+xml', accept: 'application/*', body: this.gitBody(x) });
+  }
+  async gitPull(key: string, x: { branch?: string; transport?: string; user?: string; password?: string }): Promise<void> {
+    await this.req({ method: 'POST', path: `/sap/bc/adt/abapgit/repos/${encodeURIComponent(key)}/pull`, contentType: 'application/abapgit.adt.repo.v3+xml', accept: 'application/*', body: this.gitBody(x), timeoutMs: 600_000 });
+  }
+  async gitUnlink(key: string): Promise<void> {
+    await this.req({ method: 'DELETE', path: `/sap/bc/adt/abapgit/repos/${encodeURIComponent(key)}` });
   }
 
   // ------------------------------------------------------------------ transports
@@ -302,14 +398,66 @@ export class AdtClient {
 
 // ==================================================================== response parsers (exported for tests)
 
-export function parseNodeStructure(body: string, pkg: string): ObjRef[] {
-  const out: ObjRef[] = [];
+export function parseNodeStructure(body: string, pkg: string): { packages: PkgRef[]; objects: ObjRef[] } {
+  const objects: ObjRef[] = [];
+  const packages: PkgRef[] = [];
   for (const n of all(parseXml(body), 'SEU_ADT_REPOSITORY_OBJ_NODE')) {
-    const type = ADT_TYPE[textOf(n, 'OBJECT_TYPE')];
-    if (!type) continue;
-    out.push({ uri: textOf(n, 'OBJECT_URI'), name: textOf(n, 'OBJECT_NAME'), type, pkg, desc: textOf(n, 'DESCRIPTION') });
+    const raw = textOf(n, 'OBJECT_TYPE');
+    const name = textOf(n, 'OBJECT_NAME');
+    if (raw === 'DEVC/K') {
+      if (name && name.toUpperCase() !== pkg.toUpperCase() && !packages.some(p => p.name === name)) packages.push({ name, desc: textOf(n, 'DESCRIPTION') });
+      continue;
+    }
+    const type = ADT_TYPE[raw];
+    if (!type || !textOf(n, 'OBJECT_URI')) continue;
+    objects.push({ uri: textOf(n, 'OBJECT_URI'), name, type, pkg, desc: textOf(n, 'DESCRIPTION') });
   }
-  return out;
+  return { packages, objects };
+}
+
+export function parseNamedItems(body: string): ValueHelpItem[] {
+  return all(parseXml(body), 'namedItem').map(i => ({ name: textOf(i, 'name'), desc: textOf(i, 'description') })).filter(i => i.name);
+}
+
+export function parseBinding(body: string): BindingInfo {
+  const x = parseXml(body);
+  const root = x.children.find(c => c.local === 'serviceBinding') || x.children[0];
+  const binding = first(root, 'binding');
+  const ver = (attr(binding, 'version') || '').toUpperCase();
+  const cat = attr(binding, 'category');
+  const services = all(root, 'services').flatMap(s => all(s, 'content').map(c => ({
+    name: attr(s, 'name') || '', version: attr(c, 'version') || '0001',
+    serviceDefinition: attr(first(c, 'serviceDefinition'), 'name') || '',
+    published: (attr(c, 'releaseState') || attr(root, 'published') || '').toLowerCase() === 'true' || attr(c, 'published') === 'true',
+  })));
+  const published = attr(root, 'published') === 'true' || services.some(s => s.published);
+  return {
+    name: attr(root, 'name') || '', desc: attr(root, 'description') || '',
+    bindingType: ((attr(binding, 'type') || 'ODATA').toUpperCase() as BindingInfo['bindingType']),
+    odataVersion: ver === 'V2' || ver === 'V4' ? ver : '',
+    category: cat === '1' ? 'Web API' : 'UI',
+    services: services.map(s => ({ ...s, published: s.published || published })), published,
+  };
+}
+
+export function parseDataPreview(body: string): { columns: { name: string; type: string; desc: string; key?: boolean }[]; rows: string[][]; totalRows: number } {
+  const x = parseXml(body);
+  const cols = all(x, 'columns');
+  const columns = cols.map(c => {
+    const m = first(c, 'metadata');
+    return { name: attr(m, 'name') || '', type: attr(m, 'type') || '', desc: attr(m, 'description') || '', key: attr(m, 'keyAttribute') === 'true' };
+  });
+  const data = cols.map(c => all(first(c, 'dataSet'), 'data').map(d => d.text));
+  const n = Math.max(0, ...data.map(d => d.length));
+  const rows = Array.from({ length: n }, (_, i) => data.map(col => col[i] ?? ''));
+  return { columns, rows, totalRows: +textOf(x, 'totalRows') || n };
+}
+
+export function parseGitRepos(body: string): GitRepo[] {
+  return all(parseXml(body), 'repository').map(r => ({
+    key: textOf(r, 'key'), pkg: textOf(r, 'package'), url: textOf(r, 'url'), branch: textOf(r, 'branchName'),
+    createdBy: textOf(r, 'createdBy'), status: textOf(r, 'status'), statusText: textOf(r, 'statusText'),
+  })).filter(r => r.key);
 }
 
 export function parseObjectReferences(body: string): ObjRef[] {

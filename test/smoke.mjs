@@ -25,7 +25,7 @@ await step('opens class and program tabs', async () => {
   const tabs = await page.$$eval('.tab .tname', els => els.map(e => e.textContent));
   if (tabs.join() !== 'ZR_NUSA_FLIGHTS,ZCL_NUSA_FLIGHT_SERVICE') throw new Error(tabs.join());
 });
-await step('ATC findings shown at start', async () => { await page.waitForSelector('#panelBody .prio'); });
+await step('ATC findings shown after running ATC', async () => { await page.click('[data-cmd=atc]'); await page.waitForSelector('#panelBody .prio'); });
 await page.screenshot({ path: 'dist/shot-start.png' });
 await step('edit + save asks for transport? (already recorded) and marks inactive', async () => {
   await page.click('.fake-cm');

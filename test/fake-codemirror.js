@@ -25,7 +25,7 @@
         const v = doc.getValue(); const idx = p => doc.lines.slice(0, p.line).join('\n').length + (p.line ? 1 : 0) + p.ch;
         const s = idx(from), e = to ? idx(to) : s; const nv = v.slice(0, s) + text + v.slice(e); doc.lines = nv.split('\n'); doc.gen++; ta.value = nv; fire('changes');
       },
-      operation(f) { f(); }, scrollTo() {}, getTokenTypeAt() { return ''; }, showHint(o) { const d = o.hint(); window.__hintList = d.list.map(x => x.displayText); window.__hintItems = d.list; },
+      operation(f) { f(); }, scrollTo() {}, getTokenTypeAt() { return ''; }, showHint(o) { const put = d => { if (!d) return; window.__hintList = d.list.map(x => x.displayText); window.__hintItems = d.list; }; if (o.hint.async) o.hint(cm, put, o); else put(o.hint(cm, o)); },
       indentSelection() {}, replaceSelection() {}, somethingSelected() { return false; },
       getCursorFrom() {},
     };

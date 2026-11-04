@@ -31,8 +31,9 @@ test('node structure keeps supported object types', () => {
 <SEU_ADT_REPOSITORY_OBJ_NODE><OBJECT_TYPE>DDLS/DF</OBJECT_TYPE><OBJECT_NAME>ZI_NUSA_FLIGHT</OBJECT_NAME><OBJECT_URI>/sap/bc/adt/ddic/ddl/sources/zi_nusa_flight</OBJECT_URI><DESCRIPTION>CDS</DESCRIPTION></SEU_ADT_REPOSITORY_OBJ_NODE>
 </TREE_CONTENT></DATA></asx:values></asx:abap>`;
   const r = parseNodeStructure(body, 'ZNUSA_FLIGHT');
-  assert.deepEqual(r.map(o => o.type), ['CLAS', 'DDLS']);
-  assert.equal(r[0].desc, 'Flight service');
+  assert.deepEqual(r.objects.map(o => o.type), ['CLAS', 'DDLS']);
+  assert.equal(r.objects[0].desc, 'Flight service');
+  assert.deepEqual(r.packages, [{ name: 'ZNUSA_SUB', desc: '' }]);
 });
 
 test('quick search object references', () => {

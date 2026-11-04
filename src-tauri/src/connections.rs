@@ -11,6 +11,7 @@ const KEYRING_SERVICE: &str = "nusa-adt";
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     S4,
+    S4cloud,
     Btp,
     Runner,
 }
@@ -20,6 +21,7 @@ pub enum Kind {
 pub enum Auth {
     Basic,
     Oauth,
+    Sso,
     None,
 }
 
@@ -108,6 +110,16 @@ pub fn save(
             .map_err(|e| format!("Could not store the secret in the keychain: {e}"))?;
     }
     all.push(conn);
+    let text = serde_json::to_string_pretty(&all).map_err(|e| e.to_string())?;
+    fs::write(file(app)?, text).map_err(|e| e.to_string())
+}
+
+pub fn delete(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
+    let mut all = list(app)?;
+    all.retain(|c| c.id != id);
+    if let Ok(e) = keyring::Entry::new(KEYRING_SERVICE, id) {
+        let _ = e.delete_credential();
+    }
     let text = serde_json::to_string_pretty(&all).map_err(|e| e.to_string())?;
     fs::write(file(app)?, text).map_err(|e| e.to_string())
 }

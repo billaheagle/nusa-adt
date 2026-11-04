@@ -5,10 +5,12 @@
 
 import { analyze, declaredMethods, implementedMethods, lineOf, prettyPrint, statements } from '../core/abap';
 import { Catalog, StdCatalog, WorkspaceCatalog } from '../core/catalog';
+import { template } from '../core/templates';
 import { completeAbap, completeCds } from '../core/complete';
 import {
-  AtcFinding, Backend, Breakpoint, Connection, DebugState, DebugVar, Hit, Include, Location, ObjRef, ObjState,
-  ObjType, Problem, Proposal, RunResult, StepKind, SystemInfo, Transport, TransportNeed, UnitResult, uriFor,
+  AtcFinding, Backend, BindingInfo, Breakpoint, Connection, CreateExtra, DebugState, DebugVar, GitRepo, Hit, Include, isCdsLike, Location,
+  NewPackage, ObjRef, ObjState, ObjType, PkgRef, PreviewResult, Problem, Proposal, RunResult, StepKind, SystemInfo, Transport,
+  TransportNeed, UnitResult, uriFor, ValueHelpItem,
 } from '../core/types';
 
 const wait = (ms = 90) => new Promise(r => setTimeout(r, ms));
@@ -173,22 +175,80 @@ define view entity ZI_NUSA_FLIGHT
   },
 };
 
+SRC.ZNUSA_TRAVEL = { main: `@EndUserText.label : 'Nusa: travel'
+@AbapCatalog.enhancement.category : #NOT_EXTENSIBLE
+@AbapCatalog.tableCategory : #TRANSPARENT
+@AbapCatalog.deliveryClass : #A
+@AbapCatalog.dataMaintenance : #RESTRICTED
+define table znusa_travel {
+  key client            : abap.clnt not null;
+  key travel_id         : abap.numc(8) not null;
+  description           : abap.char(60);
+  agency_id             : abap.numc(6);
+  begin_date            : abap.dats;
+  end_date              : abap.dats;
+  @Semantics.amount.currencyCode : 'znusa_travel.currency_code'
+  total_price           : abap.curr(16,2);
+  currency_code         : abap.cuky;
+  status                : abap.char(1);
+  last_changed_at       : abp_lastchange_tstmpl;
+}
+` };
+SRC.ZUI_NUSA_FLIGHT = { main: `@EndUserText.label: 'Nusa: flight service'
+define service ZUI_NUSA_FLIGHT {
+  expose ZI_NUSA_FLIGHT as Flight;
+  expose /DMO/I_CARRIER as Carrier;
+}
+` };
+SRC.ZUI_NUSA_FLIGHT_O4 = { main: '' };
+
+const PKG_OF: Record<string, string> = { ZUI_NUSA_FLIGHT: 'ZNUSA_FLIGHT_SRV', ZUI_NUSA_FLIGHT_O4: 'ZNUSA_FLIGHT_SRV' };
+
+const SAMPLE_DATA: Record<string, Record<string, string | number>[]> = {
+  '/DMO/FLIGHT': [
+    { client: '100', carrier_id: 'GA', connection_id: '0401', flight_date: '2026-11-10', price: '1850000.00', currency_code: 'IDR', plane_type_id: '737-800', seats_max: 162, seats_occupied: 146 },
+    { client: '100', carrier_id: 'GA', connection_id: '0402', flight_date: '2026-11-10', price: '1790000.00', currency_code: 'IDR', plane_type_id: '737-800', seats_max: 162, seats_occupied: 118 },
+    { client: '100', carrier_id: 'GA', connection_id: '0880', flight_date: '2026-11-12', price: '9450000.00', currency_code: 'IDR', plane_type_id: 'A330-300', seats_max: 393, seats_occupied: 350 },
+    { client: '100', carrier_id: 'QZ', connection_id: '7510', flight_date: '2026-11-11', price: '1250000.00', currency_code: 'IDR', plane_type_id: 'A320', seats_max: 180, seats_occupied: 171 },
+    { client: '100', carrier_id: 'JT', connection_id: '0034', flight_date: '2026-11-13', price: '980000.00', currency_code: 'IDR', plane_type_id: '737-900ER', seats_max: 215, seats_occupied: 190 },
+  ],
+  '/DMO/CARRIER': [
+    { client: '100', carrier_id: 'GA', name: 'Garuda Indonesia', currency_code: 'IDR' },
+    { client: '100', carrier_id: 'QZ', name: 'Indonesia AirAsia', currency_code: 'IDR' },
+    { client: '100', carrier_id: 'JT', name: 'Lion Air', currency_code: 'IDR' },
+  ],
+  ZNUSA_TRAVEL: [
+    { client: '100', travel_id: '00000001', description: 'Jakarta - Denpasar, team offsite', agency_id: '070001', begin_date: '2026-11-20', end_date: '2026-11-23', total_price: '14800000.00', currency_code: 'IDR', status: 'A', last_changed_at: '2026-11-02 09:14:00' },
+    { client: '100', travel_id: '00000002', description: 'Surabaya - Makassar, customer visit', agency_id: '070002', begin_date: '2026-12-01', end_date: '2026-12-02', total_price: '4200000.00', currency_code: 'IDR', status: 'O', last_changed_at: '2026-11-03 16:40:00' },
+    { client: '100', travel_id: '00000003', description: 'Medan - Jakarta, SAP TechEd', agency_id: '070001', begin_date: '2026-12-08', end_date: '2026-12-11', total_price: '6900000.00', currency_code: 'IDR', status: 'X', last_changed_at: '2026-11-04 08:02:00' },
+  ],
+};
+SAMPLE_DATA.ZI_NUSA_FLIGHT = SAMPLE_DATA['/DMO/FLIGHT'].map(f => ({
+  CarrierId: f.carrier_id, ConnectionId: f.connection_id, FlightDate: f.flight_date, SeatsMax: f.seats_max, SeatsOccupied: f.seats_occupied,
+  LoadFactor: (Math.round(Number(f.seats_occupied) * 10000 / Number(f.seats_max)) / 100).toFixed(2),
+}));
+
+interface MPkg { name: string; desc: string; parent: string; swc: string; layer: string }
+
 const DESC: Record<string, [ObjType, string]> = {
   ZCL_NUSA_FLIGHT_SERVICE: ['CLAS', 'Nusa: flight service with load factor'],
   ZCL_NUSA_CONSOLE: ['CLAS', 'Nusa: console runner for the flight service'],
   ZIF_NUSA_LOGGER: ['INTF', 'Nusa: application log'],
   ZR_NUSA_FLIGHTS: ['PROG', 'Nusa: flight load factor list'],
   ZI_NUSA_FLIGHT: ['DDLS', 'Nusa: flight with load factor'],
+  ZNUSA_TRAVEL: ['TABL', 'Nusa: travel'],
+  ZUI_NUSA_FLIGHT: ['SRVD', 'Nusa: flight service'],
+  ZUI_NUSA_FLIGHT_O4: ['SRVB', 'Nusa: flight service, OData V4 UI'],
 };
 
 const CONNS: Connection[] = [
-  { id: 's4d', kind: 's4', sid: 'S4D', client: '100', user: 'DEVELOPER', url: 'https://s4d.nusa.internal:44300', language: 'EN', auth: 'basic', abapVersion: 'standard', favoritePackages: ['ZNUSA_FLIGHT'], transports: true, label: 'S/4HANA 2023 on-premise' },
+  { id: 's4d', kind: 's4', sid: 'S4D', client: '100', user: 'DEVELOPER', url: 'https://s4d.nusa.internal:44300', language: 'EN', auth: 'basic', abapVersion: 'standard', favoritePackages: ['ZNUSA_FLIGHT'], transports: true, label: 'S/4HANA 2023 on-premise', runReports: true },
   { id: 'trl', kind: 'btp', sid: 'TRL', client: '100', user: 'CB9980000123', url: 'https://nusa-dev.abap.ap21.hana.ondemand.com', language: 'EN', auth: 'oauth', abapVersion: 'cloud', favoritePackages: ['ZNUSA_FLIGHT'], transports: true, label: 'BTP ABAP Environment' },
-  { id: 'loc', kind: 'runner', sid: 'LOCAL', client: '000', user: 'NUSA', url: 'http://localhost:7777', language: 'EN', auth: 'none', abapVersion: 'runner', favoritePackages: ['$TMP'], transports: false, label: 'ABAP runner on this laptop' },
+  { id: 'loc', kind: 'runner', sid: 'LOCAL', client: '000', user: 'NUSA', url: 'http://localhost:7777', language: 'EN', auth: 'none', abapVersion: 'runner', favoritePackages: ['$TMP'], transports: false, label: 'ABAP runner on this laptop', runReports: true },
 ];
 const CONN_OBJECTS: Record<string, string[]> = {
-  s4d: ['ZCL_NUSA_FLIGHT_SERVICE', 'ZIF_NUSA_LOGGER', 'ZR_NUSA_FLIGHTS', 'ZI_NUSA_FLIGHT'],
-  trl: ['ZCL_NUSA_FLIGHT_SERVICE', 'ZCL_NUSA_CONSOLE', 'ZIF_NUSA_LOGGER', 'ZI_NUSA_FLIGHT'],
+  s4d: ['ZCL_NUSA_FLIGHT_SERVICE', 'ZIF_NUSA_LOGGER', 'ZR_NUSA_FLIGHTS', 'ZI_NUSA_FLIGHT', 'ZNUSA_TRAVEL', 'ZUI_NUSA_FLIGHT', 'ZUI_NUSA_FLIGHT_O4'],
+  trl: ['ZCL_NUSA_FLIGHT_SERVICE', 'ZCL_NUSA_CONSOLE', 'ZIF_NUSA_LOGGER', 'ZI_NUSA_FLIGHT', 'ZNUSA_TRAVEL', 'ZUI_NUSA_FLIGHT', 'ZUI_NUSA_FLIGHT_O4'],
   loc: ['ZCL_NUSA_FLIGHT_SERVICE', 'ZR_NUSA_FLIGHTS'],
 };
 const SEED_TR: Record<string, Transport[]> = {
@@ -203,19 +263,30 @@ const SEED_TR: Record<string, Transport[]> = {
   loc: [],
 };
 
-interface MObj { ref: ObjState; saved: Partial<Record<Include, string>>; active: Partial<Record<Include, string>>; lock?: string }
-interface Persisted { objs: Record<string, { ref: ObjState; saved: MObj['saved']; active: MObj['active'] }>; tr: Record<string, Transport[]>; seq: number }
+interface MBinding { published: boolean; serviceDefinition: string; version: 'V2' | 'V4'; category: 'UI' | 'Web API' }
+interface MObj { ref: ObjState; saved: Partial<Record<Include, string>>; active: Partial<Record<Include, string>>; lock?: string; binding?: MBinding }
+interface Persisted {
+  objs: Record<string, { ref: ObjState; saved: MObj['saved']; active: MObj['active']; binding?: MBinding }>;
+  tr: Record<string, Transport[]>; seq: number;
+  pkgs?: Record<string, MPkg[]>; git?: Record<string, GitRepo[]>; favs?: Record<string, string[]>;
+}
 
-const STORE_KEY = 'nusa-adt-mock-v1';
+const STORE_KEY = 'nusa-adt-mock-v2';
 
 export class MockBackend implements Backend {
   readonly id = 'mock';
   private objs = new Map<string, MObj>();            // key: conn|URI
   private tr: Record<string, Transport[]> = {};
+  private pkgs: Record<string, MPkg[]> = {};
+  private git: Record<string, GitRepo[]> = {};
   private seq = 140;
   private dbg: { conn: string; steps: Step[]; i: number; inner: number; out: string[]; prog: ObjRef; cls: ObjRef } | null = null;
 
-  constructor(private storage: Storage | null = null) {
+  private conns: Connection[];
+
+  /** `connections` picks and renames the sample systems, e.g. a single DEMO system in the desktop app. */
+  constructor(private storage: Storage | null = null, opts: { connections?: (all: Connection[]) => Connection[] } = {}) {
+    this.conns = opts.connections ? opts.connections(CONNS.map(c => ({ ...c }))) : CONNS;
     this.seed();
     this.restore();
   }
@@ -224,15 +295,24 @@ export class MockBackend implements Backend {
 
   private seed() {
     for (const c of CONNS) {
+      const swc = c.abapVersion === 'cloud' ? 'ZNUSA' : 'HOME';
+      this.pkgs[c.id] = c.id === 'loc' ? [] : [
+        { name: 'ZNUSA_FLIGHT', desc: 'Nusa: flight demo', parent: '', swc, layer: c.abapVersion === 'cloud' ? '' : 'Z' + c.sid },
+        { name: 'ZNUSA_FLIGHT_SRV', desc: 'Nusa: flight OData services', parent: 'ZNUSA_FLIGHT', swc, layer: c.abapVersion === 'cloud' ? '' : 'Z' + c.sid },
+      ];
+      this.git[c.id] = c.id === 'loc' ? [] : [
+        { key: '0242AC11000' + c.sid.length, pkg: 'ZNUSA_FLIGHT', url: 'https://github.com/abapnusantara/nusa-flight.git', branch: 'refs/heads/main', createdBy: c.user, status: 'R', statusText: 'Pulled 2026-11-03 21:14' },
+      ];
       for (const name of CONN_OBJECTS[c.id]) {
         const [type, desc] = DESC[name];
-        const pkg = c.id === 'loc' ? '$TMP' : 'ZNUSA_FLIGHT';
+        const pkg = c.id === 'loc' ? '$TMP' : PKG_OF[name] || 'ZNUSA_FLIGHT';
         const uri = uriFor(type, name);
         const tr = (SEED_TR[c.id] || []).find(t => t.status === 'modifiable' && t.objects.includes(`R3TR ${type} ${name}`));
         const src = { ...SRC[name] };
         this.objs.set(this.key(c.id, uri), {
           ref: { uri, name, type, pkg, desc, inactive: false, transport: tr?.id },
           saved: { ...src }, active: { ...src },
+          binding: type === 'SRVB' ? { published: false, serviceDefinition: 'ZUI_NUSA_FLIGHT', version: 'V4', category: 'UI' } : undefined,
         });
       }
       this.tr[c.id] = JSON.parse(JSON.stringify(SEED_TR[c.id] || []));
@@ -245,9 +325,13 @@ export class MockBackend implements Backend {
       const raw = this.storage.getItem(STORE_KEY);
       if (!raw) return;
       const p = JSON.parse(raw) as Persisted;
+      this.objs.clear();
       for (const [k, v] of Object.entries(p.objs)) this.objs.set(k, { ...v });
       this.tr = p.tr;
       this.seq = p.seq;
+      if (p.pkgs) this.pkgs = p.pkgs;
+      if (p.git) this.git = p.git;
+      for (const [id, f] of Object.entries(p.favs || {})) { const c = this.conns.find(x => x.id === id); if (c) c.favoritePackages = f; }
     } catch { /* ignore broken storage */ }
   }
 
@@ -255,14 +339,17 @@ export class MockBackend implements Backend {
     if (!this.storage) return;
     try {
       const objs: Persisted['objs'] = {};
-      for (const [k, v] of this.objs) objs[k] = { ref: v.ref, saved: v.saved, active: v.active };
-      this.storage.setItem(STORE_KEY, JSON.stringify({ objs, tr: this.tr, seq: this.seq }));
+      for (const [k, v] of this.objs) objs[k] = { ref: v.ref, saved: v.saved, active: v.active, binding: v.binding };
+      const favs = Object.fromEntries(this.conns.map(c => [c.id, c.favoritePackages]));
+      this.storage.setItem(STORE_KEY, JSON.stringify({ objs, tr: this.tr, seq: this.seq, pkgs: this.pkgs, git: this.git, favs } as Persisted));
     } catch { /* storage may be unavailable */ }
   }
 
   reset() {
     try { this.storage?.removeItem(STORE_KEY); } catch { /* ignore */ }
-    this.objs.clear(); this.tr = {}; this.seq = 140; this.seed();
+    this.objs.clear(); this.tr = {}; this.pkgs = {}; this.git = {}; this.seq = 140;
+    for (const c of this.conns) { const orig = CONNS.find(x => x.id === c.id); if (orig) c.favoritePackages = ['ZNUSA_FLIGHT'].filter(() => c.id !== 'loc').concat(c.id === 'loc' ? ['$TMP'] : []); void orig; }
+    this.seed();
   }
 
   private get(conn: string, uri: string): MObj {
@@ -270,15 +357,158 @@ export class MockBackend implements Backend {
     if (!o) throw new Error(`Object ${uri} does not exist in ${conn.toUpperCase()}`);
     return o;
   }
-  private conn(id: string): Connection { return CONNS.find(c => c.id === id) as Connection; }
+  private conn(id: string): Connection { return (this.conns.find(c => c.id === id) || CONNS.find(c => c.id === id)) as Connection; }
   private all(conn: string): MObj[] { return [...this.objs.entries()].filter(([k]) => k.startsWith(conn + '|')).map(([, v]) => v); }
 
   includesOf(type: ObjType): Include[] {
     return type === 'CLAS' ? ['main', 'definitions', 'implementations', 'testclasses'] : ['main'];
   }
 
-  async connections() { return CONNS; }
-  async saveConnection() { await wait(); }
+  async connections() { return this.conns; }
+  async saveConnection(c: Connection) {
+    await wait();
+    const i = this.conns.findIndex(x => x.id === c.id);
+    if (i >= 0) this.conns[i] = { ...this.conns[i], ...c }; else this.conns.push(c);
+    this.persist();
+  }
+  async deleteConnection(id: string) { this.conns = this.conns.filter(c => c.id !== id); }
+  async resetSession() { /* nothing to forget */ }
+
+  // ---------------------------------------------------------------- packages
+  private pkgList(conn: string): MPkg[] { return (this.pkgs[conn] ||= []); }
+
+  async packageContents(conn: string, pkg: string): Promise<{ packages: PkgRef[]; objects: ObjState[] }> {
+    await wait(60);
+    return {
+      packages: this.pkgList(conn).filter(p => p.parent === pkg.toUpperCase()).map(p => ({ name: p.name, desc: p.desc })),
+      objects: this.all(conn).filter(o => o.ref.pkg === pkg).map(o => ({ ...o.ref })),
+    };
+  }
+
+  async searchPackages(conn: string, query: string): Promise<PkgRef[]> {
+    const q = query.trim().toUpperCase().replace(/\*/g, '');
+    const list = [...this.pkgList(conn), { name: '$TMP', desc: 'Local objects', parent: '', swc: 'LOCAL', layer: '' }];
+    return list.filter(p => !q || p.name.includes(q) || p.desc.toUpperCase().includes(q)).map(p => ({ name: p.name, desc: p.desc }));
+  }
+
+  async valueHelp(conn: string, kind: 'softwarecomponents' | 'transportlayers'): Promise<ValueHelpItem[]> {
+    const c = this.conn(conn);
+    if (kind === 'softwarecomponents') return c.abapVersion === 'cloud' ? [{ name: 'ZNUSA', desc: 'Nusa: software component' }, { name: 'ZLOCAL', desc: 'Local development (not transportable)' }] : [{ name: 'HOME', desc: 'Customer developments' }, { name: 'LOCAL', desc: 'Local developments (no transport)' }];
+    return c.abapVersion === 'cloud' ? [] : [{ name: 'Z' + c.sid, desc: `Transport layer of ${c.sid}` }];
+  }
+
+  async createPackage(conn: string, p: NewPackage, transport?: string): Promise<PkgRef> {
+    await wait(150);
+    const name = p.name.toUpperCase();
+    if (this.pkgList(conn).some(x => x.name === name)) throw new Error(`Package ${name} already exists`);
+    if (p.superPackage && !this.pkgList(conn).some(x => x.name === p.superPackage.toUpperCase())) throw new Error(`Super package ${p.superPackage.toUpperCase()} does not exist`);
+    this.pkgList(conn).push({ name, desc: p.desc, parent: p.superPackage.toUpperCase(), swc: p.softwareComponent, layer: p.transportLayer });
+    if (transport) {
+      const t = this.tr[conn].find(x => x.id === transport);
+      if (t && !t.objects.includes(`R3TR DEVC ${name}`)) t.objects.push(`R3TR DEVC ${name}`);
+    }
+    this.persist();
+    return { name, desc: p.desc };
+  }
+
+  async deleteObject(conn: string, obj: ObjRef, transport?: string) {
+    await wait(120);
+    const o = this.get(conn, obj.uri);
+    if (o.lock && o.ref.lockedBy && o.ref.lockedBy !== this.conn(conn).user) throw new Error(`${obj.name} is locked by ${o.ref.lockedBy}`);
+    if (o.binding?.published) throw new Error(`Unpublish ${obj.name} before deleting it`);
+    this.objs.delete(this.key(conn, obj.uri));
+    if (transport) { const t = this.tr[conn].find(x => x.id === transport); const e = `R3TR ${obj.type} ${obj.name}`; if (t && !t.objects.includes(e)) t.objects.push(e); }
+    this.persist();
+  }
+
+  // ---------------------------------------------------------------- business services
+  async bindingInfo(conn: string, obj: ObjRef): Promise<BindingInfo> {
+    await wait(60);
+    const o = this.get(conn, obj.uri);
+    const b = o.binding || { published: false, serviceDefinition: '', version: 'V4' as const, category: 'UI' as const };
+    const n = obj.name.toLowerCase();
+    return {
+      name: obj.name, desc: o.ref.desc, bindingType: 'ODATA', odataVersion: b.version, category: b.category, published: b.published,
+      services: [{ name: obj.name, version: '0001', serviceDefinition: b.serviceDefinition, published: b.published }],
+      serviceUrl: b.published ? (b.version === 'V4' ? `/sap/opu/odata4/sap/${n}/srvd/sap/${b.serviceDefinition.toLowerCase()}/0001/` : `/sap/opu/odata/sap/${obj.name}/`) : undefined,
+    };
+  }
+
+  async publishBinding(conn: string, obj: ObjRef, publish: boolean): Promise<string> {
+    await wait(400);
+    const o = this.get(conn, obj.uri);
+    if (!o.binding) throw new Error(`${obj.name} is not a service binding`);
+    if (publish) {
+      const sd = this.all(conn).find(x => x.ref.type === 'SRVD' && x.ref.name === o.binding!.serviceDefinition);
+      if (!sd) throw new Error(`Service definition ${o.binding.serviceDefinition} does not exist`);
+      if (sd.ref.inactive) throw new Error(`Activate service definition ${sd.ref.name} first`);
+    }
+    o.binding.published = publish;
+    this.persist();
+    return publish ? `Local service endpoint of ${obj.name} published` : `Local service endpoint of ${obj.name} unpublished`;
+  }
+
+  // ---------------------------------------------------------------- data preview
+  async dataPreview(conn: string, req: { entity?: string; sql?: string; rows: number }): Promise<PreviewResult> {
+    const started = Date.now();
+    await wait(180);
+    const sql = (req.sql || `SELECT * FROM ${(req.entity || '').toUpperCase()}`).trim().replace(/\s+/g, ' ');
+    const m = sql.match(/^SELECT\s+(.+?)\s+FROM\s+([\w/]+)(?:\s+WHERE\s+(.+?))?(?:\s+ORDER\s+BY\s+([\w]+)(\s+DESC(?:ENDING)?)?)?(?:\s+UP\s+TO\s+(\d+)\s+ROWS)?\s*\.?$/i);
+    if (!m) throw new Error('Only SELECT … FROM … [WHERE …] [ORDER BY …] [UP TO n ROWS] is supported in the DEMO system');
+    const entity = m[2].toUpperCase();
+    const data = SAMPLE_DATA[entity];
+    const known = data || this.all(conn).some(o => o.ref.name === entity && (o.ref.type === 'TABL' || o.ref.type === 'DDLS'));
+    if (!known) throw new Error(`${entity} is not a database table or CDS view in ${this.conn(conn).sid}`);
+    let rows = (data || []).map(r => ({ ...r }));
+    if (m[3]) {
+      for (const cond of m[3].split(/\s+AND\s+/i)) {
+        const c = cond.match(/^([\w]+)\s*(=|<>|>=|<=|>|<|LIKE)\s*'?([^']*)'?$/i);
+        if (!c) throw new Error(`Condition not understood: ${cond}`);
+        const f = c[1].toLowerCase(), op = c[2].toUpperCase(), v = c[3];
+        rows = rows.filter(r => {
+          const key = Object.keys(r).find(k => k.toLowerCase() === f);
+          if (!key) throw new Error(`Column ${c[1].toUpperCase()} is unknown`);
+          const a = String(r[key]), num = !isNaN(+a) && !isNaN(+v);
+          const cmp = num ? +a - +v : a.localeCompare(v);
+          return op === '=' ? cmp === 0 : op === '<>' ? cmp !== 0 : op === '>' ? cmp > 0 : op === '<' ? cmp < 0 : op === '>=' ? cmp >= 0 : op === '<=' ? cmp <= 0 : new RegExp('^' + v.replace(/%/g, '.*').replace(/_/g, '.') + '$', 'i').test(a);
+        });
+      }
+    }
+    if (m[4]) { const f = m[4].toLowerCase(); rows.sort((a, b) => { const k = Object.keys(a).find(x => x.toLowerCase() === f) || f; const x = String(a[k]), y = String(b[k]); const r = !isNaN(+x) && !isNaN(+y) ? +x - +y : x.localeCompare(y); return m[5] ? -r : r; }); }
+    const total = rows.length;
+    rows = rows.slice(0, Math.min(req.rows, m[6] ? +m[6] : req.rows));
+    const fieldsMeta = await this.catalog(conn).fieldsOf(entity).catch(() => null);
+    let cols = data && data.length ? Object.keys(data[0]) : (fieldsMeta || []).map(f => f.name);
+    if (m[1].trim() !== '*') {
+      const want = m[1].split(',').map(x => x.trim().toLowerCase());
+      cols = want.map(w => { const k = cols.find(c => c.toLowerCase() === w); if (!k) throw new Error(`Column ${w.toUpperCase()} is unknown`); return k; });
+    }
+    const meta = (n: string) => (fieldsMeta || []).find(f => f.name.toLowerCase() === n.toLowerCase());
+    return {
+      columns: cols.map(c => ({ name: c.toUpperCase(), type: meta(c)?.type || '', desc: meta(c)?.desc || '', key: meta(c)?.key })),
+      rows: rows.map(r => cols.map(c => String(r[c] ?? ''))), totalRows: total, sql, ms: Date.now() - started,
+    };
+  }
+
+  // ---------------------------------------------------------------- abapGit
+  async gitRepos(conn: string): Promise<GitRepo[]> { await wait(80); return JSON.parse(JSON.stringify(this.git[conn] || [])); }
+  async gitLink(conn: string, r: { pkg: string; url: string; branch: string }) {
+    await wait(200);
+    if (!/^https:\/\/.+\.git$/.test(r.url)) throw new Error('Enter the HTTPS URL of the repository, ending in .git');
+    const list = (this.git[conn] ||= []);
+    if (list.some(x => x.pkg === r.pkg.toUpperCase())) throw new Error(`Package ${r.pkg.toUpperCase()} is already linked to a repository`);
+    list.push({ key: 'R' + Date.now().toString(16).toUpperCase(), pkg: r.pkg.toUpperCase(), url: r.url, branch: r.branch || 'refs/heads/main', createdBy: this.conn(conn).user, status: '', statusText: 'Linked, not pulled yet' });
+    this.persist();
+  }
+  async gitPull(conn: string, key: string): Promise<string> {
+    await wait(600);
+    const r = (this.git[conn] || []).find(x => x.key === key);
+    if (!r) throw new Error('Repository not found');
+    r.status = 'R'; r.statusText = 'Pulled ' + new Date().toISOString().slice(0, 16).replace('T', ' ');
+    this.persist();
+    return `Pulled ${r.url.split('/').pop()} into ${r.pkg}. Nothing changed in the DEMO system.`;
+  }
+  async gitUnlink(conn: string, key: string) { this.git[conn] = (this.git[conn] || []).filter(x => x.key !== key); this.persist(); }
   async connect(conn: string): Promise<SystemInfo> {
     await wait(150);
     const c = this.conn(conn);
@@ -358,22 +588,19 @@ export class MockBackend implements Backend {
     this.persist();
   }
 
-  async createObject(conn: string, type: ObjType, name: string, desc: string, pkg: string, transport?: string): Promise<ObjRef> {
+  async createObject(conn: string, type: ObjType, name: string, desc: string, pkg: string, transport?: string, extra: CreateExtra = {}): Promise<ObjRef> {
     await wait(150);
     const uri = uriFor(type, name);
     if (this.objs.has(this.key(conn, uri))) throw new Error(`${name} already exists`);
-    const n = name.toLowerCase();
-    const tpl: Record<ObjType, Partial<Record<Include, string>>> = {
-      CLAS: {
-        main: `CLASS ${n} DEFINITION\n  PUBLIC\n  FINAL\n  CREATE PUBLIC.\n\n  PUBLIC SECTION.\n  PROTECTED SECTION.\n  PRIVATE SECTION.\nENDCLASS.\n\n\nCLASS ${n} IMPLEMENTATION.\nENDCLASS.\n`,
-        definitions: SRC.ZCL_NUSA_FLIGHT_SERVICE.definitions, implementations: SRC.ZCL_NUSA_FLIGHT_SERVICE.implementations, testclasses: '',
-      },
-      INTF: { main: `INTERFACE ${n}\n  PUBLIC.\n\nENDINTERFACE.\n` },
-      PROG: { main: `REPORT ${n}.\n\nSTART-OF-SELECTION.\n  \n` },
-      DDLS: { main: `@AccessControl.authorizationCheck: #NOT_REQUIRED\n@EndUserText.label: '${desc.replace(/'/g, '')}'\ndefine view entity ${name}\n  as select from data_source_name\n{\n  \n}\n` },
+    if (type === 'SRVB' && !extra.serviceDefinition) throw new Error('A service binding needs a service definition');
+    const main = template(type, name, desc, extra);
+    const saved: Partial<Record<Include, string>> = type === 'CLAS'
+      ? { main, definitions: SRC.ZCL_NUSA_FLIGHT_SERVICE.definitions, implementations: SRC.ZCL_NUSA_FLIGHT_SERVICE.implementations, testclasses: '' }
+      : { main };
+    const o: MObj = {
+      ref: { uri, name, type, pkg, desc, inactive: type !== 'SRVB' }, saved, active: type === 'SRVB' ? { main: '' } : {},
+      binding: type === 'SRVB' ? { published: false, serviceDefinition: extra.serviceDefinition!.toUpperCase(), version: extra.bindingType || 'V4', category: extra.category || 'UI' } : undefined,
     };
-    const empty: Partial<Record<Include, string>> = {};
-    const o: MObj = { ref: { uri, name, type, pkg, desc, inactive: true }, saved: { ...tpl[type] }, active: empty };
     this.objs.set(this.key(conn, uri), o);
     this.record(conn, o, transport);
     this.persist();
@@ -385,11 +612,15 @@ export class MockBackend implements Backend {
   private check(conn: string, o: MObj, include: Include, source: string): Problem[] {
     const c = this.conn(conn);
     const at = (line: number, msg: string, sev: Problem['sev'] = 'error'): Problem => ({ sev, msg, uri: o.ref.uri, include, line, source: 'syntax' });
-    if (o.ref.type === 'DDLS') {
+    if (o.ref.type === 'SRVB') return [];
+    if (isCdsLike(o.ref.type)) {
       const out: Problem[] = [];
+      for (const ph of ['data_source_name', 'field_name', 'entity_name', 'table_name', 'element_name', 'authorization_object']) {
+        if (new RegExp(`\\b${ph}\\b`).test(source)) out.push(at(lineOf(source, new RegExp(`\\b${ph}\\b`)), `Replace the placeholder ${ph.toUpperCase()}`));
+      }
+      if (out.length) return out;
       const opens = (source.match(/\{/g) || []).length, closes = (source.match(/\}/g) || []).length;
       if (opens !== closes) out.push(at(Math.max(0, lineOf(source, /[{}]/)), 'Unbalanced braces in the element list'));
-      if (/data_source_name/.test(source)) out.push(at(lineOf(source, /data_source_name/), 'Data source DATA_SOURCE_NAME does not exist'));
       return out;
     }
     const lines = source.split('\n');
@@ -459,7 +690,7 @@ export class MockBackend implements Backend {
     const o = this.objs.get(this.key(conn, obj.uri));
     const related = o ? this.includesOf(o.ref.type).filter(i => i !== include).map(i => o.saved[i] ?? '') : [];
     const req = { source, line, col, catalog: this.catalog(conn), cloud: this.conn(conn).abapVersion === 'cloud', related };
-    return obj.type === 'DDLS' ? completeCds(req) : completeAbap(req);
+    return isCdsLike(obj.type) ? completeCds(req) : completeAbap(req);
   }
 
   private wordAt(source: string, line: number, col: number): string {
@@ -554,7 +785,7 @@ export class MockBackend implements Backend {
     const out: AtcFinding[] = [];
     for (const inc of this.includesOf(o.ref.type)) {
       const lines = (o.saved[inc] ?? '').split('\n');
-      if (o.ref.type === 'DDLS') continue;
+      if (isCdsLike(o.ref.type) || o.ref.type === 'SRVB') continue;
       for (const s of statements(lines)) {
         const at: Location = { uri: o.ref.uri, include: inc, line: s.start };
         if (s.kw === 'SELECT' && /^SELECT\s+\*/i.test(s.text.trim())) out.push({ prio: 2, check: 'Performance', msg: 'SELECT * reads every column of /DMO/FLIGHT. List the fields you use.', at });

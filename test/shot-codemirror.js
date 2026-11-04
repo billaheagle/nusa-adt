@@ -64,10 +64,15 @@
       setValueForShot(t) { doc.lines = t.split('\n'); doc.gen++; render(); fire('changes'); },
       operation(f) { f(); }, scrollTo() {}, getTokenTypeAt() { return ''; },
       showHint(o) {
-        const d = o.hint();
+        const hint = o.hint;
+        if (hint.async) { hint(cm, d => d && cm.__drawHints(d), o); return; }
+        cm.__drawHints(hint(cm, o));
+      },
+      __drawHints(d) {
+        window.__hintList = d.list.map(it => typeof it === 'string' ? it : (it.label || it.text));
         document.querySelectorAll('.CodeMirror-hints').forEach(x => x.remove());
         const ul = document.createElement('ul'); ul.className = 'CodeMirror-hints';
-        d.list.slice(0, 9).forEach((it, i) => { const li = document.createElement('li'); li.className = 'CodeMirror-hint' + (i === 0 ? ' CodeMirror-hint-active' : ''); it.render(li, d, it); ul.appendChild(li); });
+        d.list.slice(0, 9).forEach((it, i) => { const li = document.createElement('li'); li.className = 'CodeMirror-hint' + (i === 0 ? ' CodeMirror-hint-active' : ''); if (it.render) it.render(li, d, it); else li.textContent = it.text || it; ul.appendChild(li); });
         const r = wrap.querySelector('.code').getBoundingClientRect();
         ul.style.left = (r.left + 8 + doc.cursor.ch * 7.83) + 'px'; ul.style.top = (r.top + (doc.cursor.line + 1) * 20 + 2) + 'px';
         document.body.appendChild(ul);

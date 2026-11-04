@@ -1,6 +1,6 @@
 {
   "name": "nusa-adt",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Lightweight ABAP development workbench (ADT client) built with Tauri",
   "type": "module",
@@ -10,7 +10,8 @@
     "tauri": "tauri",
     "test": "tsx --test test/*.test.ts",
     "smoke": "node scripts/build-prototype.mjs && node test/smoke.mjs  # needs: npm i -D playwright && npx playwright install chromium",
-    "prototype": "node scripts/build-prototype.mjs"
+    "prototype": "node scripts/build-prototype.mjs",
+    "test:ui": "node scripts/build-prototype.mjs && node test/ui-real.mjs"
   },
   "dependencies": {
     "codemirror": "5.65.16"

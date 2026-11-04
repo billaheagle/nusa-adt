@@ -6,8 +6,9 @@
 
 use crate::connections::{Auth, Connection, Kind};
 use crate::oauth;
+use reqwest::cookie::Jar;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use reqwest::{Client, Method};
+use reqwest::{Client, Method, Url};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -46,12 +47,15 @@ pub struct Session {
     secret: Option<String>,
     stateless: Mutex<Channel>,
     stateful: Mutex<Channel>,
+    jars: [Arc<Jar>; 2],
     bearer: Mutex<Option<oauth::Token>>,
+    /// Reentrance ticket from the browser logon (MYSAPSSO2), for Auth::Sso.
+    sso: Mutex<Option<String>>,
 }
 
-fn build_client(conn: &Connection) -> Result<Client, String> {
+fn build_client(conn: &Connection, jar: Arc<Jar>) -> Result<Client, String> {
     let mut b = Client::builder()
-        .cookie_store(true)
+        .cookie_provider(jar)
         .user_agent(concat!("NusaADT/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(15));
     if conn.allow_self_signed.unwrap_or(false) {
@@ -63,16 +67,19 @@ fn build_client(conn: &Connection) -> Result<Client, String> {
 
 impl Session {
     pub fn new(conn: Connection, secret: Option<String>) -> Result<Arc<Self>, String> {
+        let jars = [Arc::new(Jar::default()), Arc::new(Jar::default())];
         Ok(Arc::new(Session {
             stateless: Mutex::new(Channel {
-                client: build_client(&conn)?,
+                client: build_client(&conn, jars[0].clone())?,
                 csrf: None,
             }),
             stateful: Mutex::new(Channel {
-                client: build_client(&conn)?,
+                client: build_client(&conn, jars[1].clone())?,
                 csrf: None,
             }),
+            jars,
             bearer: Mutex::new(None),
+            sso: Mutex::new(None),
             conn,
             secret,
         }))
@@ -101,6 +108,29 @@ impl Session {
         match self.conn.auth {
             Auth::None => Ok(rb),
             Auth::Basic => Ok(rb.basic_auth(&self.conn.user, self.secret.as_deref())),
+            Auth::Sso => {
+                let mut ticket = self.sso.lock().await;
+                if ticket.is_none() {
+                    let client = if self.conn.kind == Kind::S4 {
+                        Some(self.conn.client.as_str())
+                    } else {
+                        None
+                    };
+                    let t = oauth::reentrance_ticket(
+                        app,
+                        &self.base(),
+                        client,
+                        Some(self.conn.language.as_str()),
+                    )
+                    .await?;
+                    let url = Url::parse(&self.base()).map_err(|e| e.to_string())?;
+                    for jar in &self.jars {
+                        jar.add_cookie_str(&format!("MYSAPSSO2={t}; Path=/"), &url);
+                    }
+                    *ticket = Some(t);
+                }
+                Ok(rb)
+            }
             Auth::Oauth => {
                 let mut tok = self.bearer.lock().await;
                 let need_login = tok.as_ref().map(|t| t.expired()).unwrap_or(true);
@@ -143,7 +173,16 @@ impl Session {
         let rb = self.auth(rb, app).await?;
         let res = rb.send().await.map_err(|e| net_err(&self.conn, e))?;
         if res.status().as_u16() == 401 {
-            return Err("Logon failed (HTTP 401). Check user and password.".into());
+            return Err(match self.conn.auth {
+                Auth::Sso => {
+                    *self.sso.lock().await = None;
+                    "Browser logon was not accepted (HTTP 401). Check that your user has the developer role (SAP_BR_DEVELOPER on SAP cloud systems) and log in again.".to_string()
+                }
+                Auth::Oauth => {
+                    "Logon failed (HTTP 401). The service key login was not accepted.".to_string()
+                }
+                _ => "Logon failed (HTTP 401). Check user and password.".to_string(),
+            });
         }
         ch.csrf = res
             .headers()
@@ -178,6 +217,15 @@ impl Session {
             }
             if res.status == 401 && attempt == 0 && self.conn.auth == Auth::Oauth {
                 *self.bearer.lock().await = None;
+                continue;
+            }
+            if res.status == 401 && attempt == 0 && self.conn.auth == Auth::Sso {
+                // ticket or session expired: log on again through the browser
+                *self.sso.lock().await = None;
+                ch.csrf = None;
+                if modifying && self.conn.kind != Kind::Runner {
+                    self.fetch_csrf(&mut ch, req.stateful, app).await?;
+                }
                 continue;
             }
             return Ok(res);
@@ -249,8 +297,22 @@ impl Session {
 }
 
 fn net_err(conn: &Connection, e: reqwest::Error) -> String {
+    let local = ["://localhost", "://127.0.0.1", "://[::1]"]
+        .iter()
+        .any(|h| conn.url.to_lowercase().contains(h));
     if e.is_timeout() {
-        format!("{} did not answer in time", conn.sid)
+        format!("{} did not answer in time ({}).", conn.sid, conn.url)
+    } else if e.is_connect() && conn.kind == Kind::Runner {
+        format!(
+            "No ABAP runner is running at {}. Start the runner on this laptop, \
+             or open the DEMO system or add an SAP system under Systems.",
+            conn.url
+        )
+    } else if e.is_connect() && local {
+        format!(
+            "Nothing is listening at {}. Check that the program is running and the port is right.",
+            conn.url
+        )
     } else if e.is_connect() {
         format!(
             "Cannot reach {} at {}. Check VPN, host and port.",

@@ -7,13 +7,16 @@ import { KWSET, prettyPrint as localPretty } from '../core/abap';
 import { completeAbap, completeCds } from '../core/complete';
 import { RemoteCatalog } from '../adt/catalog';
 import {
-  AtcFinding, Backend, Breakpoint, Connection, DebugState, Hit, Include, Location, ObjRef, ObjState, ObjType,
-  Problem, Proposal, RunResult, StepKind, SystemInfo, Transport, TransportNeed, UnitResult,
+  AtcFinding, Backend, BindingInfo, Breakpoint, Connection, CreateExtra, DebugState, GitRepo, Hit, Include, isCdsLike, Location,
+  NewPackage, ObjRef, ObjState, ObjType, PkgRef, PreviewResult, Problem, Proposal, RunResult, StepKind, SystemInfo, Transport,
+  TransportNeed, UnitResult, ValueHelpItem,
 } from '../core/types';
 
 export interface ConnStore {
   list(): Promise<Connection[]>;
   save(c: Connection, secret?: string): Promise<void>;
+  remove(id: string): Promise<void>;
+  resetSession(id: string): Promise<void>;
 }
 
 const sev = (t: string): Problem['sev'] => (/^[EA]$/.test(t) ? 'error' : t === 'W' ? 'warning' : 'info');
@@ -65,9 +68,59 @@ export class AdtBackend implements Backend {
   }
 
   async packageObjects(conn: string, pkg: string): Promise<ObjState[]> {
-    const list = await this.c(conn).nodeStructure(pkg);
-    return list.map(o => this.withState(conn, o));
+    return (await this.packageContents(conn, pkg)).objects;
   }
+
+  async packageContents(conn: string, pkg: string): Promise<{ packages: PkgRef[]; objects: ObjState[] }> {
+    const r = await this.c(conn).nodeStructure(pkg);
+    return { packages: r.packages, objects: r.objects.map(o => this.withState(conn, o)) };
+  }
+
+  searchPackages(conn: string, query: string): Promise<PkgRef[]> { return this.c(conn).searchPackages(query); }
+
+  async valueHelp(conn: string, kind: 'softwarecomponents' | 'transportlayers'): Promise<ValueHelpItem[]> {
+    try { return await this.c(conn).packageValueHelp(kind); } catch { return []; }
+  }
+
+  async createPackage(conn: string, p: NewPackage, transport?: string): Promise<PkgRef> {
+    await this.c(conn).createPackage(p, this.info(conn).user, transport);
+    return { name: p.name.toUpperCase(), desc: p.desc };
+  }
+
+  async deleteObject(conn: string, obj: ObjRef, transport?: string): Promise<void> {
+    const cl = this.c(conn);
+    const l = await cl.lock(obj.uri);
+    try {
+      await cl.deleteObject(obj.uri, l.handle, transport || l.transport);
+    } catch (e) {
+      await cl.unlock(obj.uri, l.handle).catch(() => undefined);
+      throw e;
+    }
+    this.inactive.get(conn)?.delete(obj.uri);
+    this.transportOf.delete(conn + '|' + obj.uri);
+  }
+
+  deleteConnection(id: string) { this.clients.delete(id); return this.store.remove(id); }
+  resetSession(conn: string) { this.clients.delete(conn); return this.store.resetSession(conn); }
+
+  bindingInfo(conn: string, obj: ObjRef): Promise<BindingInfo> { return this.c(conn).bindingInfo(obj.uri); }
+  async publishBinding(conn: string, obj: ObjRef, publish: boolean): Promise<string> {
+    const b = await this.c(conn).bindingInfo(obj.uri);
+    return this.c(conn).publishBinding(b, publish);
+  }
+
+  dataPreview(conn: string, req: { entity?: string; sql?: string; rows: number }): Promise<PreviewResult> {
+    return this.c(conn).dataPreview(req);
+  }
+
+  gitRepos(conn: string): Promise<GitRepo[]> { return this.c(conn).gitRepos(); }
+  gitLink(conn: string, r: { pkg: string; url: string; branch: string; transport?: string; user?: string; password?: string }) { return this.c(conn).gitLink(r); }
+  async gitPull(conn: string, key: string, transport?: string, user?: string, password?: string): Promise<string> {
+    const repo = (await this.gitRepos(conn)).find(r => r.key === key);
+    await this.c(conn).gitPull(key, { branch: repo?.branch, transport, user, password });
+    return 'Pull started. abapGit imports the objects in the background; refresh the package to see them.';
+  }
+  gitUnlink(conn: string, key: string) { return this.c(conn).gitUnlink(key); }
 
   async search(conn: string, query: string): Promise<ObjRef[]> {
     if (!query.trim()) return [];
@@ -127,8 +180,8 @@ export class AdtBackend implements Backend {
     this.inactive.get(conn)?.add(obj.uri);
   }
 
-  async createObject(conn: string, type: ObjType, name: string, desc: string, pkg: string, transport?: string): Promise<ObjRef> {
-    const uri = await this.c(conn).createObject(type, name, desc, pkg, this.info(conn).user, transport);
+  async createObject(conn: string, type: ObjType, name: string, desc: string, pkg: string, transport?: string, extra: CreateExtra = {}): Promise<ObjRef> {
+    const uri = await this.c(conn).createObject(type, name, desc, pkg, this.info(conn).user, transport, extra);
     if (transport) this.transportOf.set(conn + '|' + uri, transport);
     this.inactive.get(conn)?.add(uri);
     return { uri, name: name.toUpperCase(), type, pkg, desc };
@@ -167,8 +220,8 @@ export class AdtBackend implements Backend {
     if (!cat) { cat = new RemoteCatalog(this.c(conn)); this.catalogs.set(conn, cat); }
     const related = include === 'main' ? [] : await this.related(conn, obj);
     const req = { source, line, col, catalog: cat, cloud: this.info(conn).abapVersion === 'cloud', related };
-    const local = await (obj.type === 'DDLS' ? completeCds(req) : completeAbap(req)).catch(() => [] as Proposal[]);
-    if (obj.type === 'DDLS') return local;
+    const local = await (isCdsLike(obj.type) ? completeCds(req) : completeAbap(req)).catch(() => [] as Proposal[]);
+    if (isCdsLike(obj.type)) return local;
     // The server knows every context on its release; add what the local engine did not offer.
     let server: Proposal[] = [];
     try {

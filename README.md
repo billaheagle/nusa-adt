@@ -19,7 +19,7 @@ The workflow of Eclipse ADT in a fast, VS Code-style window.
 ![Nusa ADT in dark mode with context-aware completion](docs/screenshot-dark.png)
 
 > **Bahasa Indonesia.** Nusa ADT adalah IDE ABAP ringan dengan tampilan ala VS Code.
-> Terhubung ke S/4HANA on-premise, BTP ABAP Environment, dan ABAP runner lokal lewat
+> Terhubung ke S/4HANA on-premise, S/4HANA Cloud Public Edition, BTP ABAP Environment, dan ABAP runner lokal lewat
 > layanan ADT REST yang sama dengan Eclipse, jadi tidak ada yang perlu dipasang di sisi SAP.
 > Unduh installer di halaman [Releases](../../releases).
 
@@ -30,15 +30,18 @@ The workflow of Eclipse ADT in a fast, VS Code-style window.
 **Editor**
 - ABAP and CDS highlighting, line numbers, bracket matching, comment toggle
 - Code completion that understands context: members of inferred types, DDIC fields, SQL clauses, call parameters, function module patterns, CDS annotations and more ([full list](#code-completion))
-- Go to definition (F3), where-used list, pretty printer
-- Dark, light or follow-system theme
+- Go to definition (F3), element info (F2), ABAP keyword documentation (F1), where-used list, pretty printer
+- Outline of classes, methods, attributes and CDS elements
+- Dark, light or follow-system theme, adjustable editor font size
 
 **ADT workflow**
-- Project Explorer with favorite packages and `$TMP`, object search
-- Lock, save inactive, activate, activate all inactive objects
+- Project Explorer with favorite packages, subpackages and `$TMP`, object search
+- New packages with software component, transport layer and application component value helps
+- New objects grouped like Eclipse: classes, interfaces, programs, database tables, CDS data definitions, metadata extensions, access controls, behavior definitions, service definitions and service bindings
+- Service binding editor with **Publish / Unpublish** for OData V2 and V4, and the service URL
+- Lock, save inactive, activate, activate all inactive objects, delete objects
 - Class includes in tabs: global class, local types, test classes
 - Transport Organizer: choose or create a request on save, release requests
-- New objects: classes, interfaces, programs, CDS data definitions
 
 **Quality and running**
 - Syntax check with problems panel and inline markers
@@ -46,6 +49,14 @@ The workflow of Eclipse ADT in a fast, VS Code-style window.
 - ATC findings grouped by priority
 - Run console classes (`IF_OO_ADT_CLASSRUN`) and, on the local runner, reports
 - Debugger with breakpoints, step into/over/return, variables and call stack (experimental on SAP systems)
+
+**Built-in extensions** (switch each on or off in the Extensions view)
+- **Data Preview & SQL Console**: F8 on a table or CDS view shows its rows; run ABAP SQL with `Ctrl+Enter`
+- **ABAP Cleaner** (`Ctrl+4`): MOVE, CREATE OBJECT, CALL METHOD, EQ/NE, NOT … IS, TRANSLATE, chained and aligned declarations, keyword case; each rule can be turned off in Settings
+- **RAP Generator**: right-click a table to generate root and projection views, metadata extension, both behavior definitions, service definition and an OData V4 (or V2) binding, then activate and publish them
+- **abapGit**: link a package to a Git repository, pull and unlink
+- **Keyword documentation and element info**: F1 and F2 at the cursor
+- **Outline** of the open object
 
 **Built to stay light**
 - Tauri 2 app using the system webview: small installer, low memory
@@ -59,43 +70,66 @@ The workflow of Eclipse ADT in a fast, VS Code-style window.
 
 </details>
 
+<details>
+<summary><b>Service binding with Publish, and the RAP generator</b></summary>
+
+![Service binding editor with the published OData V4 service](docs/screenshot-binding.png)
+
+![RAP generator listing the seven objects it creates from a table](docs/screenshot-rap.png)
+
+</details>
+
 ### Supported systems
 
-| | S/4HANA / NetWeaver | BTP ABAP Environment | Local runner |
-|---|:---:|:---:|:---:|
-| Explorer, editor, save, activate | ✓ | ✓ | ✓ |
-| Completion from the system's repository | ✓ | ✓ released objects | ✓ |
-| Syntax check, pretty printer | ✓ | ✓ | ✓ local |
-| Transports | ✓ | ✓ | not needed |
-| ABAP Unit | ✓ | ✓ | if served |
-| ATC | ✓ | ✓ | – |
-| Run console class | ✓ | ✓ | ✓ |
-| Run report with list output | SAP GUI | – | ✓ |
-| Debugger | experimental | experimental | – |
-| Login | user and password | browser SSO | none |
+| | S/4HANA / NetWeaver | S/4HANA Cloud Public | BTP ABAP Environment | Local runner |
+|---|:---:|:---:|:---:|:---:|
+| Explorer, editor, save, activate | ✓ | ✓ | ✓ | ✓ |
+| Completion from the system's repository | ✓ | ✓ released objects | ✓ released objects | ✓ |
+| Packages, CDS, RAP objects, service bindings | ✓ | ✓ | ✓ | – |
+| Syntax check, pretty printer, ABAP Cleaner | ✓ | ✓ | ✓ | ✓ local |
+| Transports | ✓ | ✓ | ✓ | not needed |
+| ABAP Unit, ATC | ✓ | ✓ | ✓ | unit if served |
+| Data preview, SQL console | ✓ | ✓ | ✓ | – |
+| abapGit | recent releases | ✓ | ✓ | – |
+| Run console class | ✓ | ✓ | ✓ | ✓ |
+| Run report with list output | SAP GUI | – | – | ✓ |
+| Debugger | experimental | experimental | experimental | – |
+| Login | user and password or browser | browser (SSO) | service key or browser | none |
 
 ## Download
 
-Installers for Windows (`.msi` / `.exe`), macOS (`.dmg`) and Linux (`.deb` / `.AppImage`) are attached to each [release](../../releases).
+Every [release](../../releases) has two kinds of downloads:
+
+| | Install | Portable (no install, just run) |
+|---|---|---|
+| Windows 10/11 | `Nusa.ADT_x.y.z_x64-setup.exe` or `.msi` | `Nusa-ADT-x.y.z-portable-x64.exe` |
+| macOS 11+ | `.dmg` | `Nusa-ADT-x.y.z-portable-macos.zip` |
+| Linux | `.deb` | `Nusa-ADT-x.y.z-portable-x86_64.AppImage` |
+
+The portable Windows build is a single `.exe`: put it anywhere (Downloads, a USB stick) and double-click. It keeps its system list in a `nusa-adt-data` folder next to the file; passwords stay in the Windows Credential Manager. It needs the Microsoft Edge WebView2 runtime, which Windows 10 and 11 already include.
 
 The builds are not code-signed yet:
 
 - **Windows**: SmartScreen asks once. Click **More info → Run anyway**.
-- **macOS**: right-click the app and choose **Open** the first time.
+- **macOS**: unzip, then right-click **Nusa ADT** and choose **Open** the first time. On macOS 15, use **System Settings → Privacy & Security → Open Anyway**.
+- **Linux**: `chmod +x Nusa-ADT-*.AppImage` and run it.
 
-To build the installers yourself, open **Actions → Build desktop app → Run workflow**. A draft release with all three platforms appears after 15–25 minutes.
+To build everything yourself, open **Actions → Build desktop app → Run workflow**. A draft release with all files appears after 15–25 minutes. The same files are also attached to the workflow run under **Artifacts**.
 
 ## Connect to SAP
 
-Open **Systems** (the server icon at the bottom of the left rail) and add a system:
+The app starts on the built-in **DEMO** system: sample classes, a report, a CDS view and transports, so you can try every feature without SAP. Changes there stay on your computer; **Reset DEMO System** in the command palette restores the samples.
+
+To work on a real system, open **Systems** (the server icon at the bottom of the left rail) and add one:
 
 | Type | What to enter |
 |---|---|
-| **S/4HANA or NetWeaver** | URL such as `https://host:44300` (HTTPS port from transaction `SMICM` → Services), client and user. The password is asked once and kept in the keychain. |
-| **BTP ABAP Environment** | The service key JSON of your instance. The browser opens for login on first use; the token refreshes on its own. |
+| **S/4HANA or NetWeaver** | URL such as `https://host:44300` (HTTPS port from transaction `SMICM` → Services), client and user. The password is asked once and kept in the keychain. Systems with SAML or Kerberos can use *Browser logon* instead. |
+| **S/4HANA Cloud Public Edition** | The ABAP API URL of the developer extensibility system, such as `https://my123456-api.s4hana.cloud.sap`. The browser opens and you log on as in the Fiori launchpad; Nusa ADT receives a logon ticket and keeps it for the session. |
+| **BTP ABAP Environment** | Either the service key JSON (OAuth, the token refreshes on its own) or just the system URL, such as `https://<id>.abap.eu10.hana.ondemand.com`, with *Browser logon*. |
 | **Local runner** | The runner's URL, for example `http://localhost:7777`. See [docs/RUNNER-PROTOCOL.md](docs/RUNNER-PROTOCOL.md). |
 
-On the SAP side, the ICF services under `/sap/bc/adt` must be active (`SICF`) and the user needs the same authorizations as for Eclipse ADT. If Eclipse ADT already works with the system, Nusa ADT will too. For development systems with self-signed certificates, tick *Accept a self-signed certificate*.
+On the SAP side, the ICF services under `/sap/bc/adt` must be active (`SICF`) and the user needs the same authorizations as for Eclipse ADT. On S/4HANA Cloud and BTP that means a business role with the **Developer** catalog (`SAP_BR_DEVELOPER`); without it, logon succeeds but every request returns 401, and Nusa ADT says so. If logon expires, use **Log in again** on the system in the Systems view. If Eclipse ADT already works with the system, Nusa ADT will too. For development systems with self-signed certificates, tick *Accept a self-signed certificate*.
 
 ## How it works
 
@@ -113,21 +147,22 @@ flowchart TB
   subgraph core["Rust core"]
     direction LR
     ses["Session per system<br/>cookies · CSRF token · stateful locks"]
-    auth["Basic auth or OAuth<br/>OS keychain"]
+    auth["Basic, browser ticket or OAuth<br/>OS keychain"]
     ses --- auth
   end
   subgraph sys["Your systems"]
     direction LR
     s4[("S/4HANA")]
+    s4c[("S/4HANA Cloud")]
     btp[("BTP ABAP")]
     run[("Local runner")]
-    s4 ~~~ btp ~~~ run
+    s4 ~~~ s4c ~~~ btp ~~~ run
   end
   app -->|"invoke adt_request"| core
   core -->|"HTTPS · ADT REST"| sys
 ```
 
-The UI never talks to SAP directly. The Rust core keeps two cookie jars per system, one stateless and one stateful, because ADT enqueue locks live in the stateful session between LOCK, PUT and UNLOCK. It also fetches and refreshes CSRF tokens and handles login.
+The UI never talks to SAP directly. The Rust core keeps two cookie jars per system, one stateless and one stateful, because ADT enqueue locks live in the stateful session between LOCK, PUT and UNLOCK. It also fetches and refreshes CSRF tokens and handles login. For browser logon it opens `/sap/bc/adt/core/http/reentranceticket` in your browser, receives the ticket on a local port and sends it as the `MYSAPSSO2` cookie, the same way Eclipse ADT does.
 
 ## Build from source
 
@@ -161,18 +196,22 @@ Other scripts:
 | `npm test` | unit tests: ABAP analysis, completion contexts, ADT parsers, backends |
 | `npm run prototype` | single HTML file with sample systems, no SAP needed |
 | `npm run smoke` | headless UI test of the prototype (needs Playwright) |
+| `npm run test:ui` | end-to-end UI test with the real CodeMirror editor (needs Playwright) |
 
 ## Keyboard shortcuts
 
 | Action | Shortcut | Action | Shortcut |
 |---|---|---|---|
-| Open object | `Ctrl+Shift+A` | All commands | `Ctrl+Shift+P` or `F1` |
+| Open object | `Ctrl+Shift+A` | All commands | `Ctrl+Shift+P` |
+| New object | `Ctrl+N` | Settings | `Ctrl+,` |
 | Save | `Ctrl+S` | Activate | `Ctrl+F3` |
 | Activate all inactive | `Ctrl+Shift+F3` | Check syntax | `Ctrl+F2` |
-| Pretty printer | `Shift+F1` | Code completion | `Ctrl+Space` |
-| Run | `F8` / `F9` | ABAP Unit | `Ctrl+Shift+F10` |
-| ATC | `Ctrl+Shift+F2` | Where-used | `Ctrl+Shift+G` |
-| Go to definition | `F3` | Toggle comment | `Ctrl+/` |
+| Pretty printer | `Shift+F1` | ABAP Cleaner | `Ctrl+4` |
+| Code completion | `Ctrl+Space` | Element info | `F2` |
+| Keyword documentation | `F1` | Go to definition | `F3` |
+| Run, data preview | `F8` / `F9` | SQL console | `Ctrl+Alt+F8` |
+| ABAP Unit | `Ctrl+Shift+F10` | ATC | `Ctrl+Shift+F2` |
+| Where-used | `Ctrl+Shift+G` | Toggle comment | `Ctrl+/` |
 | Toggle breakpoint | `Ctrl+Shift+B` | Dark mode on/off | `Ctrl+Alt+D` |
 | Step into / over / return | `F5` / `F6` / `F7` | Resume / stop debugging | `F8` / `Shift+F5` |
 | Side bar | `Ctrl+B` | Panel | `Ctrl+J` |
@@ -211,11 +250,11 @@ Completion works out where the cursor is, infers variable types from the source,
 | Path | Contents |
 |---|---|
 | `src/ui` | workbench (`app.ts`), editor modes and completion popup (`editor.ts`), styles |
-| `src/core` | ABAP analysis and pretty printer, completion engine, reference catalog, shared types |
+| `src/core` | ABAP analysis and pretty printer, completion engine, reference catalog, ABAP Cleaner, RAP generator, outline, templates, shared types |
 | `src/adt` | ADT REST client, XML parser, repository catalog, debugger, Tauri bridge |
-| `src/backends` | `adt.ts` for real systems, `mock.ts` for the prototype |
-| `src-tauri` | Rust core: commands, HTTP sessions, OAuth login, connection store |
-| `test` | unit tests, in-memory ADT server, UI smoke test |
+| `src/backends` | `adt.ts` for real systems, `mock.ts` for the DEMO system, `router.ts` |
+| `src-tauri` | Rust core: commands, HTTP sessions, OAuth and browser logon, connection store |
+| `test` | unit tests, in-memory ADT server, UI tests |
 | `docs` | runner protocol, screenshots |
 
 ## Status
@@ -224,23 +263,26 @@ Nusa ADT is a preview. What has been verified so far:
 
 | Area | Status |
 |---|---|
-| Workbench UI end to end (prototype) | tested: edit, save, activate, includes, transports, ABAP Unit, debugger, themes, completion, phone width |
-| ABAP analysis, pretty printer, completion contexts | 40 unit tests |
+| Workbench UI end to end (DEMO system, real editor) | tested: edit, save, activate, completion while typing, packages, new objects, service binding publish, data preview, RAP generator, ABAP Cleaner, abapGit, systems, themes, phone width |
+| Desktop shell against an in-memory ADT server | tested: title bar, error pages, save with transport, activate, session restore |
+| ABAP analysis, cleaner, RAP generator, completion contexts | 50 unit tests |
 | ADT response parsing and edit cycle | tested against recorded payload shapes and an in-memory ADT server |
 | Rust core | written and format-checked; first compile happens in the release workflow |
-| Live SAP systems | not tested yet. Object creation, ATC, where-used and the debugger may need payload adjustments |
-| BTP login | redirect to `http://localhost:<port>/adt/redirect` must be allowed by the UAA |
+| Live SAP systems | not tested yet. Package creation, the newer object types, publishing, data preview and abapGit may need payload adjustments |
+| Browser logon | redirect to `http://localhost:<port>/adt/redirect`; BTP OAuth needs it allowed by the UAA |
 
 Found something that does not work with your system? Open an issue with the error message and the SAP release.
 
 ## Roadmap
 
-- [ ] First verified run against S/4HANA and BTP
+- [ ] First verified run against S/4HANA, S/4HANA Cloud and BTP
 - [ ] Code signing for Windows and macOS installers
 - [ ] CDS formatter and server-side DDL completion
 - [ ] Rename and extract-method refactoring
-- [ ] RAP generator (behavior definition, service binding)
-- [ ] abapGit integration
+- [x] RAP generator (views, behavior definitions, service binding)
+- [x] abapGit pull and link
+- [ ] abapGit push and staging
+- [ ] Function groups, message classes, data elements and domains
 - [ ] Debugger watchpoints and conditional breakpoints
 
 ## License

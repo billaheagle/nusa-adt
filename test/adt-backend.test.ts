@@ -8,7 +8,7 @@ const conn: Connection = { id: 'npl', kind: 's4', sid: 'NPL', client: '001', use
 
 test('edit cycle against an ADT server: lock, transport, write test include, activate', async () => {
   const srv = new FakeAdtServer();
-  const b = new AdtBackend(srv, { list: async () => [conn], save: async () => undefined });
+  const b = new AdtBackend(srv, { list: async () => [conn], save: async () => undefined, remove: async () => undefined, resetSession: async () => undefined });
   await b.connections();
   const sys = await b.connect('npl');
   assert.equal(sys.release, 'Connected');

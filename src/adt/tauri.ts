@@ -20,4 +20,6 @@ export class TauriTransport implements HttpTransport {
 export class TauriConnStore implements ConnStore {
   list() { return invoke<Connection[]>('list_connections'); }
   save(c: Connection, secret?: string) { return invoke<void>('save_connection', { conn: c, secret: secret ?? null }); }
+  remove(id: string) { return invoke<void>('delete_connection', { id }); }
+  resetSession(id: string) { return invoke<void>('reset_session', { id }); }
 }

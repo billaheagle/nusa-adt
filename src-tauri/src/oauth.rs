@@ -90,7 +90,7 @@ pub async fn login(app: &tauri::AppHandle, key: &str) -> Result<Token, String> {
         .open_url(auth_url, None::<&str>)
         .map_err(|e| e.to_string())?;
 
-    let code = tokio::time::timeout(Duration::from_secs(300), wait_for_code(&listener))
+    let code = tokio::time::timeout(Duration::from_secs(300), wait_for_param(&listener, "code"))
         .await
         .map_err(|_| "Login timed out after 5 minutes".to_string())??;
 
@@ -105,7 +105,46 @@ pub async fn login(app: &tauri::AppHandle, key: &str) -> Result<Token, String> {
     .await
 }
 
-async fn wait_for_code(listener: &TcpListener) -> Result<String, String> {
+/// Browser logon used by Eclipse ADT for SAP S/4HANA Cloud Public Edition, SAP BTP ABAP
+/// (system URL) and on-premise systems with SAML: the system redirects to localhost with a
+/// `reentrance-ticket`, which is then sent as the MYSAPSSO2 cookie.
+pub async fn reentrance_ticket(
+    app: &tauri::AppHandle,
+    base: &str,
+    client: Option<&str>,
+    language: Option<&str>,
+) -> Result<String, String> {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| e.to_string())?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    // SAP expects "localhost" here; 127.0.0.1 is rejected by some systems.
+    let redirect = format!("http://localhost:{port}/adt/redirect");
+    let mut url = format!(
+        "{}/sap/bc/adt/core/http/reentranceticket?redirect-url={}",
+        base.trim_end_matches('/'),
+        urlencode(&redirect)
+    );
+    if let Some(c) = client.filter(|c| !c.is_empty()) {
+        url.push_str(&format!("&sap-client={}", urlencode(c)));
+    }
+    if let Some(l) = language.filter(|l| !l.is_empty()) {
+        url.push_str(&format!("&sap-language={}", urlencode(l)));
+    }
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    let ticket = tokio::time::timeout(
+        Duration::from_secs(300),
+        wait_for_param(&listener, "reentrance-ticket"),
+    )
+    .await
+    .map_err(|_| "Browser logon timed out after 5 minutes".to_string())??;
+    Ok(percent_decode(&ticket))
+}
+
+async fn wait_for_param(listener: &TcpListener, name: &str) -> Result<String, String> {
+    let prefix = format!("{name}=");
     loop {
         let (mut sock, _) = listener.accept().await.map_err(|e| e.to_string())?;
         let mut buf = vec![0u8; 8192];
@@ -130,7 +169,7 @@ async fn wait_for_code(listener: &TcpListener) -> Result<String, String> {
             .map(|(_, q)| q)
             .unwrap_or("")
             .split('&')
-            .find_map(|kv| kv.strip_prefix("code="))
+            .find_map(|kv| kv.strip_prefix(prefix.as_str()))
             .map(|s| s.to_string());
         let page = if code.is_some() {
             "<h3>Nusa ADT is logged in. You can close this tab.</h3>"
@@ -145,6 +184,25 @@ async fn wait_for_code(listener: &TcpListener) -> Result<String, String> {
         let _ = sock.write_all(resp.as_bytes()).await;
         return code.ok_or_else(|| "Login was cancelled".to_string());
     }
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            let hex = std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or("");
+            if let Ok(v) = u8::from_str_radix(hex, 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn urlencode(s: &str) -> String {

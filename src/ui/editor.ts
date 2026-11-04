@@ -31,7 +31,7 @@ export function defineModes() {
     meta: { lineComment: '*' },
   });
 
-  const cdsKw = /(?:define|view|entity|root|as|select|from|association|composition|of|to|on|key|join|inner|left|outer|where|group|by|having|union|all|with|parameters|cast|case|when|then|else|end|and|or|not|is|null|distinct|projection|provider|contract|transactional_query|redirected|parent|exact|one|many|extend|abstract|custom)(?![\w])/i;
+  const cdsKw = /(?:transactional_query|implementation|corresponding|authorization|determination|composition|association|persistent|parameters|validation|projection|redirected|additional|dependent|unmanaged|mandatory|pfcg_auth|numbering|annotate|readonly|distinct|contract|instance|internal|behavior|abstract|provider|factory|mapping|managed|service|include|extend|create|custom|update|unique|result|having|select|expose|modify|master|global|define|strict|parent|delete|entity|aspect|static|action|query|total|union|early|where|class|table|grant|draft|outer|exact|inner|field|group|alias|role|join|root|else|with|left|from|cast|then|late|null|many|save|when|view|lock|case|etag|use|and|one|end|not|all|for|key|is|as|to|on|by|in|of|or)(?![\w])/i;
   CodeMirror.defineSimpleMode('cds', {
     start: [
       { regex: /\/\/.*/, token: 'comment' },
@@ -74,7 +74,7 @@ export function createEditor(host: HTMLElement): CM {
   });
 }
 
-export function newDoc(text: string, mode: 'abap' | 'cds') {
+export function newDoc(text: string, mode: 'abap' | 'cds' | 'text') {
   return CodeMirror.Doc(text, mode);
 }
 
@@ -118,9 +118,9 @@ function showDoc(p: Proposal, item: HTMLElement) {
   docEl.style.top = Math.min(r.top, window.innerHeight - docEl.offsetHeight - 8) + 'px';
 }
 
-export function showProposals(cm: CM, list: Proposal[]) {
+function toHints(cm: CM, list: Proposal[]) {
   const cur = cm.getCursor();
-  const line = cm.getLine(cur.line);
+  const line: string = cm.getLine(cur.line);
   let start = cur.ch;
   while (start > 0 && /[\w/$]/.test(line[start - 1])) start--;
   const prefix = line.slice(start, cur.ch).toLowerCase();
@@ -140,17 +140,34 @@ export function showProposals(cm: CM, list: Proposal[]) {
         applyProposal(cm2, self.from, cm2.getCursor(), p);
       },
     }));
-  if (!items.length) return;
-  cm.showHint({
-    hint: () => {
-      const data = { list: items, from: CodeMirror.Pos(cur.line, start), to: CodeMirror.Pos(cur.line, cur.ch) };
+  return { list: items, from: CodeMirror.Pos(cur.line, start), to: CodeMirror.Pos(cur.line, cur.ch) };
+}
+
+/**
+ * Opens the completion popup. `fetch` is called again on every keystroke while the popup is
+ * open, so typing `lo_service->` after the popup opened on `lo` shows the methods, not the
+ * stale variable list. The popup closes when the new context has no proposals.
+ */
+export function startCompletion(cm: CM, fetch: () => Promise<Proposal[]>) {
+  let seq = 0;
+  const hint = (cm2: CM, callback: (d: unknown) => void) => {
+    const my = ++seq;
+    fetch().then(list => {
+      if (my !== seq) return;                       // a newer keystroke is already being answered
+      const data = toHints(cm2, list);
+      if (!data.list.length) { callback(null); return; }
       CodeMirror.on(data, 'select', (c: { p: Proposal }, el: HTMLElement) => showDoc(c.p, el));
       CodeMirror.on(data, 'close', hideDoc);
-      return data;
-    },
-    completeSingle: false,
-    closeCharacters: /[\s()[\]{};:,.]/,
-  });
+      callback(data);
+    }).catch(() => callback(null));
+  };
+  (hint as unknown as { async: boolean }).async = true;
+  cm.showHint({ hint, completeSingle: false, closeCharacters: /[;]/, closeOnUnfocus: true, updateOnCursorActivity: true });
+}
+
+/** Kept for callers with a ready list (tests, one-off popups). */
+export function showProposals(cm: CM, list: Proposal[]) {
+  startCompletion(cm, () => Promise.resolve(list));
 }
 
 export function bpMarker(): HTMLElement {

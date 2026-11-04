@@ -34,6 +34,23 @@ async fn save_connection(
 }
 
 #[tauri::command]
+async fn delete_connection(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    state.sessions.lock().await.remove(&id);
+    connections::delete(&app, &id)
+}
+
+/// Drops the HTTP session so the next request logs in again (used by "Log in again").
+#[tauri::command]
+async fn reset_session(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
+    state.sessions.lock().await.remove(&id);
+    Ok(())
+}
+
+#[tauri::command]
 async fn adt_request(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
@@ -65,6 +82,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_connections,
             save_connection,
+            delete_connection,
+            reset_session,
             adt_request
         ])
         .run(tauri::generate_context!())

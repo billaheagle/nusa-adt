@@ -44,8 +44,29 @@ pub struct Connection {
     pub allow_self_signed: Option<bool>,
 }
 
+/// Portable mode: when the executable's name contains "portable" (or a `portable.txt`
+/// file sits next to it), settings live in `nusa-adt-data` beside the executable
+/// instead of the user profile, so the app can run from a USB stick or Downloads.
+fn portable_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let by_name = exe
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.to_lowercase().contains("portable"))
+        .unwrap_or(false);
+    if by_name || dir.join("portable.txt").exists() {
+        Some(dir.join("nusa-adt-data"))
+    } else {
+        None
+    }
+}
+
 fn file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let dir = match portable_dir() {
+        Some(d) => d,
+        None => app.path().app_config_dir().map_err(|e| e.to_string())?,
+    };
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.join("connections.json"))
 }

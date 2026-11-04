@@ -25,5 +25,5 @@ export function redact(s: string): string {
 export function diagReport(info: Record<string, string | undefined>, conn: string, max = 60): string {
   const head = Object.entries(info).filter(([, v]) => v !== undefined && v !== '').map(([k, v]) => `${k}: ${redact(String(v))}`);
   const lines = diagEntries(conn).slice(-max).map(e => `${e.at}  ${e.line}`);
-  return ['Nusa ADT diagnostics', ...head, '', `Last ${lines.length} requests:`, ...(lines.length ? lines : ['(none)'])].join('\n');
+  return ['Nusa Studio diagnostics', ...head, '', `Last ${lines.length} requests:`, ...(lines.length ? lines : ['(none)'])].join('\n');
 }

@@ -10,7 +10,7 @@ const shortBody = (b: string) => (b || '').replace(/<[^>]+>/g, ' ').replace(/\s+
 type Invoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 const invoke: Invoke = (cmd, args) => {
   const t = (window as unknown as { __TAURI__?: { core: { invoke: Invoke } } }).__TAURI__;
-  if (!t) return Promise.reject(new Error('Not running inside the Nusa ADT desktop app'));
+  if (!t) return Promise.reject(new Error('Not running inside the Nusa Studio desktop app'));
   return t.core.invoke(cmd, args);
 };
 

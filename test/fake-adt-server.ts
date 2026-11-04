@@ -1,4 +1,4 @@
-// In-memory server answering the ADT subset Nusa ADT uses. Doubles as an executable
+// In-memory server answering the ADT subset Nusa Studio uses. Doubles as an executable
 // description of what the local ABAP runner must serve (docs/RUNNER-PROTOCOL.md).
 import { HttpRequest, HttpResponse, HttpTransport } from '../src/adt/client';
 

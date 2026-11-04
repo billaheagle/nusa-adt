@@ -91,10 +91,10 @@ await step('explorer: subpackage, service binding publish', async () => {
   await page.click('.row >> text=ZNUSA_FLIGHT_SRV');
   await page.waitForSelector('.row >> text=ZUI_NUSA_FLIGHT_O4');
   await page.click('.row >> text=ZUI_NUSA_FLIGHT_O4');
-  await page.waitForSelector('.sb >> text=Not published');
+  await page.waitForSelector('.of-head .pill >> text=Not published');
   await page.click('[data-act="sb-publish"]');
-  await page.waitForSelector('.sb .pill >> text=Published');
-  await page.waitForSelector('.sb code >> text=/odata4/');
+  await page.waitForSelector('.of-head .pill >> text=/^Published$/');
+  await page.waitForSelector('.of-url code >> text=/odata4/');
   await shot('04-service-binding');
 });
 
@@ -120,7 +120,7 @@ await step('RAP generator from the table creates and activates 7 objects and pub
   await page.waitForSelector('.modal >> text=Select transport request');
   await page.click('.modal button[type=submit]');
   await page.waitForSelector('.toast >> text=Generated 7 objects', { timeout: 15000 });
-  await page.waitForSelector('.sb .pill >> text=Published');
+  await page.waitForSelector('.of-head .pill >> text=/^Published$/');
 });
 
 await step('new package and new object in it', async () => {
@@ -313,7 +313,7 @@ await step('Eclipse guide and connection log', async () => {
   await page.waitForTimeout(300);
   await palette('Show Connection Log');
   await page.waitForSelector('.modal pre.diag').catch(() => { throw new Error('log'); });
-  if (!/Nusa ADT diagnostics/.test(await page.textContent('.modal pre.diag'))) throw new Error('log text');
+  if (!/Nusa Studio diagnostics/.test(await page.textContent('.modal pre.diag'))) throw new Error('log text');
   await page.click('.modal button:has-text("Close")');
   await page.waitForSelector('#modal', { state: 'hidden' });
 });
@@ -364,14 +364,17 @@ await step('form objects: IAM app opens as a form, edit, add a row, XML view, sa
   await page.waitForSelector('.row >> text=Identity and Access Management');
   for (const f of ['Authorizations', 'Cloud Communication Management', 'Business Configuration Management']) await page.waitForSelector(`.row >> text=${f}`);
   await page.dblclick('.row.leaf >> text=ZNUSA_FLIGHT_APP');
-  await page.waitForSelector('.xf-head >> text=IAM App').catch(async () => { throw new Error('no form: ' + JSON.stringify(await page.evaluate(() => ({ tabs: [...document.querySelectorAll('.tab')].map(t => t.className + ':' + t.textContent.trim()), pane: document.querySelector('#pane').hidden, html: document.querySelector('#pane').innerHTML.slice(0, 300), rows: [...document.querySelectorAll('#sideBody .row .lbl')].map(x => x.textContent).slice(30, 60) })))); });
+  await page.waitForSelector('.of-head .of-kicker >> text=IAM App');
   await shot('13-iam-form');
-  const v = page.locator('.xf-table input[aria-label="Value"]').first();
+  const v = page.locator('.of-table input[aria-label="Value"]').first();
   await v.fill('03');
   await page.waitForSelector('.tab.on .tclose.dirty');
-  const rows = (await page.$$('.xf-sec:has(h3:text-is("Authorizations")) tbody tr')).length;
-  await page.click('.xf-sec:has(h3:text-is("Authorizations")) [data-act="xf-add"]');
-  await page.waitForFunction(n => document.querySelectorAll('.xf-sec h3').length && [...document.querySelectorAll('.xf-sec')].find(s => s.querySelector('h3')?.firstChild?.textContent.trim() === 'Authorizations').querySelectorAll('tbody tr').length === n + 1, rows);
+  const sec = '.of-card:has(h2:text-is("Authorizations"))';
+  const rows = (await page.$$(`${sec} tbody tr`)).length;
+  if (rows !== 2) throw new Error('rows ' + rows);
+  await page.click(`${sec} [data-act="xf-add"]`);
+  await page.waitForFunction(n => [...document.querySelectorAll('.of-card')].find(c => c.querySelector('h2')?.textContent === 'Authorizations')?.querySelectorAll('tbody tr').length === n + 1, rows);
+  if (!(await page.$('.of-head .pill >> text=Unsaved changes')) && !(await page.$('.of-head .pill >> text=Inactive'))) throw new Error('status badge');
   await page.click('[data-act="xml-mode"][data-id="xml"]');
   const xml = await page.evaluate(() => document.querySelector('.CodeMirror').CodeMirror.getValue());
   if (!/sia6:value="03"/.test(xml)) throw new Error('xml not updated');
@@ -390,7 +393,39 @@ await step('new communication scenario from the New Object dialog', async () => 
   await page.click('.modal button[type=submit]');
   await page.waitForSelector('.modal >> text=Select transport request').then(() => page.click('.modal button[type=submit]')).catch(() => {});
   await page.waitForSelector('.tab.on >> text=ZNUSA_PARTNER_CS');
-  await page.waitForSelector('.xf-head >> text=Communication Scenario');
+  await page.waitForSelector('.of-head .of-kicker >> text=Communication Scenario');
+});
+
+await step('collapse all, then favorites and packages open again', async () => {
+  await explorer();
+  await page.click('[data-act="collapse-all"]');
+  await page.click('.row >> text=Favorite Packages');
+  await page.click('.row[data-pkg="ZNUSA_FLIGHT"]');
+  await page.waitForSelector('.row.leaf >> text=ZR_NUSA_FLIGHTS', { state: 'visible' });
+  await page.click('.row[data-pkg="ZNUSA_FLIGHT_IAM"]');
+  await page.waitForSelector('.row.leaf >> text=ZNUSA_FLT', { state: 'visible' });
+});
+
+await step('form screens: data element, authorization object, light theme', async () => {
+  await page.dblclick('.row.leaf >> text=ZNUSA_FLT');
+  await page.waitForSelector('.of-head .of-kicker >> text=Authorization Object');
+  await shot('14-suso');
+  await page.click('.row[data-pkg="ZNUSA_FLIGHT"]');
+  await page.click('.row[data-pkg="ZNUSA_FLIGHT"]');
+  await page.dblclick('.row.leaf >> text=ZNUSA_CARRIER_ID');
+  await page.waitForSelector('.of-head .of-kicker >> text=Data Element');
+  await shot('15-dtel');
+  await page.keyboard.press('Control+Alt+D');
+  await page.waitForTimeout(200);
+  await shot('16-dtel-light');
+  await page.keyboard.press('Control+Alt+D');
+  await page.keyboard.press('Control+Shift+A');
+  await page.keyboard.type('ZUI_NUSA_FLIGHT_O4', { delay: 5 });
+  await page.waitForTimeout(400);
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('.of-head .of-kicker >> text=Service Binding');
+  await page.waitForTimeout(200);
+  await shot('17-binding');
 });
 
 await step('phone width has no horizontal overflow', async () => {

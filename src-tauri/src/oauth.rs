@@ -174,9 +174,9 @@ async fn wait_for_param(listener: &TcpListener, name: &str) -> Result<String, St
             .find_map(|kv| kv.strip_prefix(prefix.as_str()))
             .map(|s| s.to_string());
         let page = if code.is_some() {
-            "<h3>Nusa ADT is logged in. You can close this tab.</h3>"
+            "<h3>Nusa Studio is logged in. You can close this tab.</h3>"
         } else {
-            "<h3>Login was not completed. Return to Nusa ADT and try again.</h3>"
+            "<h3>Login was not completed. Return to Nusa Studio and try again.</h3>"
         };
         let resp = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",

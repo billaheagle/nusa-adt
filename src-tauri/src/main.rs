@@ -1,4 +1,4 @@
-// Nusa ADT desktop shell. The UI is web code; this side owns the network:
+// Nusa Studio desktop shell. The UI is web code; this side owns the network:
 // sessions, CSRF, cookies, stateful locks, auth and the connection list.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -87,5 +87,5 @@ fn main() {
             adt_request
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Nusa ADT");
+        .expect("error while running Nusa Studio");
 }

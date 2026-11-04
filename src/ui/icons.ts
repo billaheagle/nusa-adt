@@ -50,5 +50,5 @@ const P: Record<string, string> = {
 
 export const ic = (name: string, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true">${P[name] || ''}</svg>`;
 
-/** Kawung motif: four ovals around a point, the app's mark. */
-export const LOGO = `<svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><g fill="currentColor"><ellipse cx="12" cy="6.2" rx="3.3" ry="5" /><ellipse cx="12" cy="17.8" rx="3.3" ry="5"/><ellipse cx="6.2" cy="12" rx="5" ry="3.3"/><ellipse cx="17.8" cy="12" rx="5" ry="3.3"/></g><circle cx="12" cy="12" r="1.5" fill="var(--chrome)"/></svg>`;
+/** Gunungan (the wayang "mountain") with code brackets: the Nusa Studio mark. */
+export const LOGO = `<svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1.5C14.8 4.3 19.4 9.3 20.3 14.2c.4 2.1-.3 3.8-1.6 4.8v2.3H5.3V19c-1.3-1-2-2.7-1.6-4.8C4.6 9.3 9.2 4.3 12 1.5Z" fill="currentColor"/><path d="M9.7 10.4 7.5 13l2.2 2.6M14.3 10.4l2.2 2.6-2.2 2.6" fill="none" stroke="var(--chrome)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;

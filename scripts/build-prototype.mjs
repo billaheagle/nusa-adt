@@ -11,7 +11,7 @@ const res = await build({
 const js = res.outputFiles[0].text;
 const css = readFileSync('src/ui/styles.css', 'utf8');
 const cm = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16';
-const html = `<title>Nusa ADT</title>
+const html = `<title>Nusa Studio</title>
 <meta name="description" content="A lightweight ABAP development workbench">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>

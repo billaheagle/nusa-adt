@@ -56,7 +56,7 @@ pub struct Session {
 fn build_client(conn: &Connection, jar: Arc<Jar>) -> Result<Client, String> {
     let mut b = Client::builder()
         .cookie_provider(jar)
-        .user_agent(concat!("NusaADT/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("NusaStudio/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(15));
     if conn.auth == Auth::Sso {
         // An expired session answers with a redirect to the identity provider; following it

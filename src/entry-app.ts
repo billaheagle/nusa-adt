@@ -16,5 +16,5 @@ try { storage = window.localStorage; storage.getItem('probe'); } catch { storage
 
 const backend = RoutingBackend.withDemo(new AdtBackend(new TauriTransport(), new TauriConnStore()), storage);
 startApp(backend).catch(err => {
-  document.body.textContent = 'Nusa ADT failed to start: ' + String(err?.stack || err);
+  document.body.textContent = 'Nusa Studio failed to start: ' + String(err?.stack || err);
 });

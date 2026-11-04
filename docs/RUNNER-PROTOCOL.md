@@ -1,6 +1,6 @@
 # Local runner protocol
 
-Nusa ADT talks to the local ABAP runner with the **same ADT REST calls** it uses for SAP
+Nusa Studio talks to the local ABAP runner with the **same ADT REST calls** it uses for SAP
 systems, so one client covers S/4HANA, BTP and the runner. The runner only has to serve
 the subset below. `test/fake-adt-server.ts` is an executable version of this document:
 if your runner answers those requests the same way, the IDE works with it.

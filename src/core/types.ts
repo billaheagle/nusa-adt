@@ -201,7 +201,7 @@ export interface TypeInfo {
   /** abap: ABAP source · cds: CDS-like source (DDL, BDL, DCL, SRVD, table) · form: service binding page ·
    *  xml: form editor over the object's XML document (authorizations, IAM, communication, …) */
   editor: 'abap' | 'cds' | 'form' | 'xml';
-  /** xml objects that cannot be changed from Nusa ADT */
+  /** xml objects that cannot be changed from Nusa Studio */
   readOnly?: boolean;
   prefix: string;
   maxLen: number;

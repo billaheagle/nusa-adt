@@ -1,4 +1,4 @@
-// Nusa ADT workbench: explorer, tabs, editor, panels, palette, transports, debugger,
+// Nusa Studio workbench: explorer, tabs, editor, panels, palette, transports, debugger,
 // systems, settings and the built-in extensions. Everything that talks to a system goes
 // through the Backend interface.
 
@@ -155,7 +155,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   root.innerHTML = `
   <div id="app" class="${opts.prototype ? 'is-proto' : ''} ${IS_MAC && TAURI ? 'mac' : ''}">
     <header class="titlebar" data-tauri-drag-region>
-      <div class="brand" data-tauri-drag-region>${LOGO}<span data-tauri-drag-region>${esc(opts.brand || 'Nusa ADT')}</span></div>
+      <div class="brand" data-tauri-drag-region>${LOGO}<span data-tauri-drag-region>${esc(opts.brand || 'Nusa Studio')}</span></div>
       <button class="conn-chip" id="connChip" data-act="pick-conn" title="Switch system"></button>
       <div class="toolbar" role="toolbar" aria-label="Editor actions">
         <button data-cmd="save" title="Save (Ctrl+S)">${ic('save')}<span>Save</span></button>
@@ -457,7 +457,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
           const folders = g.types.flatMap(ty => {
             const list = objs.filter(o => o.type === ty).sort((a, b) => a.name.localeCompare(b.name));
             if (!list.length) return [];
-            // objects of types Nusa ADT has no editor for: one folder per type, named by the system
+            // objects of types Nusa Studio has no editor for: one folder per type, named by the system
             const sets: [string, string, ObjState[]][] = ty === 'XOBJ'
               ? [...new Set(list.map(o => o.typeLabel || 'Other'))].sort().map(l => [`XOBJ-${l}`, l, list.filter(o => (o.typeLabel || 'Other') === l)])
               : [[ty, TYPE_INFO[ty].folder, list]];
@@ -629,12 +629,12 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
         <div class="ext-ic">${ic(e.icon)}</div>
         <div class="ext-main">
           <div class="ext-head"><b>${esc(e.name)}</b><label class="switch" title="${ext(e.id) ? 'Disable' : 'Enable'} ${esc(e.name)}"><input type="checkbox" data-ext="${e.id}" ${ext(e.id) ? 'checked' : ''}><i></i></label></div>
-          <div class="ext-by">Built in · Nusa ADT</div>
+          <div class="ext-by">Built in · Nusa Studio</div>
           <p>${esc(e.desc)}</p>
           <div class="ext-keys">${esc(e.keys)}</div>
         </div>
       </li>`).join('')}</ul>
-      <p class="side-pad note">These extensions ship with Nusa ADT and work on every connected system. Tools that need their own runtime, such as SAP's ABAP Cleaner plugin or abaplint, are not included.</p>`;
+      <p class="side-pad note">These extensions ship with Nusa Studio and work on every connected system. Tools that need their own runtime, such as SAP's ABAP Cleaner plugin or abaplint, are not included.</p>`;
     $('#sideBody').querySelectorAll<HTMLInputElement>('input[data-ext]').forEach(inp => {
       inp.onchange = () => {
         settings.ext[inp.dataset.ext as ExtId] = inp.checked; saveSettings();
@@ -704,7 +704,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       </section>` : ''}
       <section class="set">
         <h3>About</h3>
-        <p class="note">Nusa ADT ${APP_VERSION} · open-source ABAP workbench by ABAP Nusantara. Systems are stored in your user profile (or next to the portable exe); passwords and tickets in the operating system keychain.</p>
+        <p class="note">Nusa Studio ${APP_VERSION} · open-source ABAP workbench by ABAP Nusantara. Systems are stored in your user profile (or next to the portable exe); passwords and tickets in the operating system keychain.</p>
       </section>`;
     $<HTMLSelectElement>('#setFont').onchange = (e) => {
       settings.editorFont = +(e.target as HTMLSelectElement).value; saveSettings();
@@ -864,7 +864,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     const c = conn();
     const sys = S.sys[S.conn];
     const demo = S.conns.find(x => x.builtin && x.id !== c.id);
-    if (!sys) { $('#welcome').innerHTML = `<div class="wel">${LOGO}<h1>${esc(opts.brand || 'Nusa ADT')}</h1><p><i class="spin"></i>Connecting to <b>${esc(c.sid)}</b>${c.auth === 'sso' ? '. Finish the logon in your browser.' : ''}</p></div>`; return; }
+    if (!sys) { $('#welcome').innerHTML = `<div class="wel">${LOGO}<h1>${esc(opts.brand || 'Nusa Studio')}</h1><p><i class="spin"></i>Connecting to <b>${esc(c.sid)}</b>${c.auth === 'sso' ? '. Finish the logon in your browser.' : ''}</p></div>`; return; }
     if ('error' in sys) {
       $('#welcome').innerHTML = `<div class="wel wel-err"><div class="err-ic">${ic('plug')}</div><h1>Can't connect to ${esc(c.sid)}</h1><p class="err-msg">${esc(sys.error)}</p>
         <div class="wel-actions">
@@ -881,7 +881,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       ['Pretty printer · Clean up', 'Shift+F1 · Ctrl+4'], ['Run · Data preview', 'F8'], ['Code completion', 'Ctrl+Space'],
       ['Definition · Element info · Docs', 'F3 · F2 · F1'], ['Where-used list', 'Ctrl+Shift+G'],
     ];
-    $('#welcome').innerHTML = `<div class="wel">${LOGO}<h1>${esc(opts.brand || 'Nusa ADT')}</h1><p>Connected to <b>${esc(c.sid)}</b> · ${esc(sys.release)}</p>
+    $('#welcome').innerHTML = `<div class="wel">${LOGO}<h1>${esc(opts.brand || 'Nusa Studio')}</h1><p>Connected to <b>${esc(c.sid)}</b> · ${esc(sys.release)}</p>
       <div class="wel-actions"><button class="btn primary" data-act="palette-obj">${ic('search')}Open object</button><button class="btn" data-cmd="new">${ic('plus')}New object</button><button class="btn" data-cmd="new-package">${ic('pkgplus')}New package</button></div>
       <dl class="keys">${keys.map(([a, k]) => `<dt>${a}</dt><dd><kbd>${k}</kbd></dd>`).join('')}</dl>
       ${store.get('nusa-adt-eclipse-seen') ? '' : `<section class="eclipse-card">
@@ -895,18 +895,25 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     const t = cur();
     if (!t) return;
     const pane = $('#pane');
+    // a different object starts at the top; re-rendering the same one keeps the position
+    const paneKey = `${t.key}|${t.view}`;
+    if (pane.dataset.key !== paneKey) { pane.dataset.key = paneKey; requestAnimationFrame(() => { pane.scrollTop = 0; }); }
     if (isForm(t)) {
       const d = docs.get(docKey(t, 'main'));
       if (!d) { pane.innerHTML = '<div class="xf"><p class="muted"><i class="spin"></i>Loading</p></div>'; return; }
       const ro = !!TYPE_INFO[t.ref.type].readOnly || !!t.ref.lockedBy;
       pane.innerHTML = renderXmlForm(d.getValue(), {
-        readOnly: ro, typeLabel: typeLabel(t.ref),
-        note: TYPE_INFO[t.ref.type].readOnly ? 'Nusa ADT shows this object type read-only. Change it in Eclipse ADT or SAP GUI.'
-          : t.ref.lockedBy ? `Locked by ${t.ref.lockedBy}` : undefined,
+        readOnly: ro, typeLabel: typeLabel(t.ref), glyph: glyph(t.ref.type).replace('class="glyph', 'class="glyph big'),
+        status: isDirty(t) ? { text: 'Unsaved changes', tone: 'warn' } : t.ref.inactive ? { text: 'Inactive', tone: 'warn' } : { text: 'Active', tone: 'ok' },
+        note: TYPE_INFO[t.ref.type].readOnly ? 'Nusa Studio shows this object type read-only. Change it in Eclipse ADT or SAP GUI.'
+          : t.ref.lockedBy ? `${t.ref.lockedBy} is editing this object, so it is read-only for you.` : undefined,
       });
       const apply = (el: HTMLInputElement | HTMLTextAreaElement) => {
         const v = el instanceof HTMLInputElement && el.type === 'checkbox' ? String(el.checked) : el.value;
+        if (el instanceof HTMLInputElement && el.type === 'checkbox') { const lbl = el.parentElement?.querySelector('span'); if (lbl) lbl.textContent = el.checked ? 'On' : 'Off'; }
         try { d.setValue(setXmlValue(d.getValue(), el.dataset.xpath as string, v)); } catch (e) { fail(e); }
+        const badge = pane.querySelector('.of-badges .pill');
+        if (badge) { badge.textContent = 'Unsaved changes'; badge.className = 'pill p-warn'; }
       };
       pane.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('[data-xpath]').forEach(el => {
         if (el.tagName === 'BUTTON') return;
@@ -967,24 +974,35 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     }
     // service binding
     const b = t.binding;
-    if (!b) { pane.innerHTML = '<div class="sb"><p class="muted"><i class="spin"></i>Reading the service binding</p></div>'; return; }
-    if ('error' in b) { pane.innerHTML = `<div class="sb"><p class="sys-err">${esc(b.error)}</p><button class="btn" data-act="sb-reload">Try again</button></div>`; return; }
+    if (!b) { pane.innerHTML = '<div class="of"><p class="of-none"><i class="spin"></i>Reading the service binding</p></div>'; return; }
+    if ('error' in b) { pane.innerHTML = `<div class="of"><div class="of-banner err">${esc(b.error)}<button class="btn small" data-act="sb-reload">Try again</button></div></div>`; return; }
     const svc = b.services[0];
     const sd = svc ? allObjs().find(o => o.type === 'SRVD' && o.name === svc.serviceDefinition) : undefined;
-    pane.innerHTML = `<div class="sb">
-      <header><i class="glyph g-SRVB big">O</i><div><h2>${esc(b.name)}</h2><p>${esc(b.desc || t.ref.desc)}</p></div>
-        <span class="pill ${b.published ? 'p-ok' : 'p-warn'}">${b.published ? 'Published' : 'Not published'}</span></header>
-      <section class="sb-grid">
-        <div><h4>Binding type</h4><p>${esc(b.bindingType === 'ODATA' ? `OData ${b.odataVersion} · ${b.category}` : b.bindingType)}</p></div>
-        <div><h4>Service definition</h4><p>${svc ? (sd ? `<button class="link" data-act="open" data-uri="${esc(sd.uri)}">${esc(svc.serviceDefinition)}</button>` : esc(svc.serviceDefinition)) : '–'}</p></div>
-        <div><h4>Version</h4><p>${esc(svc?.version || '0001')}</p></div>
-        <div><h4>Local service endpoint</h4><p>${b.serviceUrl ? `<code>${esc(b.serviceUrl)}</code> <button class="link" data-act="sb-copy">Copy</button>` : b.published ? 'Published' : 'Publish the binding to create it'}</p></div>
-      </section>
-      <div class="sb-actions">
-        ${b.published ? `<button class="btn" data-act="sb-publish" data-id="0">Unpublish</button>` : `<button class="btn primary" data-act="sb-publish" data-id="1">${ic('upload')}Publish</button>`}
-        <button class="btn ghost" data-act="sb-reload">${ic('refresh')}Refresh</button>
-      </div>
-      <p class="note">Publishing makes the OData service available on ${esc(conn().sid)}. The Fiori elements preview opens from the SAP system; Nusa ADT does not include one yet.</p>
+    const ro = (label: string, value: string, mono = true) => `<div class="of-field ro"><span class="of-label">${label}</span><div class="of-value ${mono ? 'mono' : ''}">${value || '<span class="of-empty">Not set</span>'}</div></div>`;
+    pane.innerHTML = `<div class="of">
+      <header class="of-head">
+        <div class="of-id">${glyph('SRVB').replace('class="glyph', 'class="glyph big')}<div class="of-titles"><div class="of-kicker">Service Binding</div><h1>${esc(b.name)}</h1></div>
+          <div class="of-badges"><span class="pill ${b.published ? 'p-ok' : 'p-warn'}">${b.published ? 'Published' : 'Not published'}</span></div></div>
+        <p class="of-lead">${esc(b.desc || t.ref.desc)}</p>
+        <div class="of-actions">
+          ${b.published ? `<button class="btn" data-act="sb-publish" data-id="0">Unpublish</button>` : `<button class="btn primary" data-act="sb-publish" data-id="1">${ic('upload')}Publish</button>`}
+          <button class="btn ghost" data-act="sb-reload">${ic('refresh')}Refresh</button>
+        </div>
+      </header>
+      <div class="of-body"><div class="of-main">
+        <section class="of-card"><header><h2>Service</h2></header><div class="of-grid">
+          ${ro('Binding type', esc(b.bindingType === 'ODATA' ? `OData ${b.odataVersion}` : b.bindingType), false)}
+          ${ro('Category', esc(b.category || ''), false)}
+          ${ro('Service definition', svc ? (sd ? `<button class="link mono" data-act="open" data-uri="${esc(sd.uri)}">${esc(svc.serviceDefinition)}</button>` : esc(svc.serviceDefinition)) : '')}
+          ${ro('Version', esc(svc?.version || '0001'))}
+          ${ro('Package', esc(t.ref.pkg))}
+        </div></section>
+        <section class="of-card"><header><h2>Local service endpoint</h2></header>
+          ${b.serviceUrl ? `<div class="of-url"><code>${esc(b.serviceUrl)}</code><button class="btn small" data-act="sb-copy">Copy</button></div>`
+            : `<p class="of-none">${b.published ? 'Published. Refresh to see the URL.' : 'Publish the binding to create the service URL.'}</p>`}
+          <p class="of-hint">Publishing makes the OData service available on ${esc(conn().sid)}. The Fiori elements preview opens from the SAP system; Nusa Studio does not include one yet.</p>
+        </section>
+      </div></div>
     </div>`;
   }
 
@@ -1700,7 +1718,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
           ($('#noBindRow', root) as HTMLElement).hidden = ty !== 'SRVB';
           const note = $('#noFormNote', root) as HTMLElement;
           note.hidden = info.editor !== 'xml';
-          note.textContent = info.editor === 'xml' ? `You edit the ${info.label.toLowerCase()} in a form after creating it.${c.builtin ? '' : ' Nusa ADT takes the format from an existing object of this type in ' + c.sid + '.'}` : '';
+          note.textContent = info.editor === 'xml' ? `You edit the ${info.label.toLowerCase()} in a form after creating it.${c.builtin ? '' : ' Nusa Studio takes the format from an existing object of this type in ' + c.sid + '.'}` : '';
         };
         sync(true);
         typeEl.onchange = () => sync();
@@ -1924,7 +1942,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     const sys = S.sys[id];
     const hosts = c.kind === 'runner' ? null : systemHosts(c.url);
     return diagReport({
-      'Nusa ADT': APP_VERSION,
+      'Nusa Studio': APP_VERSION,
       Platform: navigator.userAgent,
       System: `${c.sid} (${KIND_LABEL[c.kind]})`,
       Logon: AUTH_LABEL[c.auth],
@@ -1945,7 +1963,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   }
   async function eclipseGuide() {
     store.set('nusa-adt-eclipse-seen', '1');
-    await modal('Coming from Eclipse ADT', `<p class="note">Nusa ADT talks to the same ADT services as Eclipse, so nothing changes on the SAP side, and the Eclipse shortcuts you know still work.</p>
+    await modal('Coming from Eclipse ADT', `<p class="note">Nusa Studio talks to the same ADT services as Eclipse, so nothing changes on the SAP side, and the Eclipse shortcuts you know still work.</p>
       <ul class="eclipse-list">${ECLIPSE_POINTS.map(([h, p]) => `<li><b>${esc(h)}</b><span>${esc(p)}</span></li>`).join('')}</ul>
       <div class="eclipse-keys"><div><h4>Same keys as Eclipse</h4><dl class="keys">${[['Open object', 'Ctrl+Shift+A'], ['Activate', 'Ctrl+F3'], ['Check', 'Ctrl+F2'], ['Pretty printer', 'Shift+F1'], ['Definition · Element info', 'F3 · F2'], ['Where-used', 'Ctrl+Shift+G'], ['Run', 'F8 / F9'], ['ABAP Unit · ATC', 'Ctrl+Shift+F10 · Ctrl+Shift+F2']].map(([a, k]) => `<dt>${a}</dt><dd><kbd>${k}</kbd></dd>`).join('')}</dl></div>
       <div><h4>New here</h4><dl class="keys">${[['Command palette', 'Ctrl+Shift+P'], ['Next match (multi-cursor)', 'Ctrl+D'], ['Move · copy line', 'Alt+↑↓ · Shift+Alt+↓'], ['Delete line', 'Ctrl+Shift+K'], ['Clean up', 'Ctrl+4'], ['Keyword docs', 'F1']].map(([a, k]) => `<dt>${a}</dt><dd><kbd>${k}</kbd></dd>`).join('')}</dl></div></div>`,
@@ -2001,7 +2019,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
           $('#sfUrlHint', root).textContent = HINT[k];
           $('#sfUserLabel', root).textContent = a === 'sso' ? 'User ID (optional, shows your transport requests)' : 'User';
           $<HTMLInputElement>('#sfUrl', root).placeholder = k === 's4cloud' ? 'https://my123456.s4hana.cloud.sap' : k === 'btp' ? 'https://<id>.abap.<region>.hana.ondemand.com' : k === 'runner' ? 'http://localhost:7777' : 'https://host:44300';
-          $('#sfNote', root).textContent = a === 'sso' ? 'Your browser opens for the logon, the same way Eclipse does it. Nusa ADT receives a logon ticket on http://localhost and keeps it for this session. Your user needs the developer role (SAP_BR_DEVELOPER on SAP cloud systems).'
+          $('#sfNote', root).textContent = a === 'sso' ? 'Your browser opens for the logon, the same way Eclipse does it. Nusa Studio receives a logon ticket on http://localhost and keeps it for this session. Your user needs the developer role (SAP_BR_DEVELOPER on SAP cloud systems).'
             : a === 'oauth' ? 'Create the service key in the SAP BTP cockpit on your ABAP environment instance. It is stored in the operating system keychain.'
               : a === 'basic' ? 'The password is stored in the operating system keychain, never in a file.' : '';
         };
@@ -2456,7 +2474,9 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
         if (fav) { if (open) S.collapsed.add(id); else S.collapsed.delete(id); }
         else { if (open) S.openSub.delete(id); else S.openSub.add(id); }
         persistTree();
-        if (!open) await loadPkg(pkg); else renderSide();
+        // already loaded packages only need a redraw; loadPkg returns early for them
+        if (!open) await loadPkg(pkg);
+        renderSide();
         break;
       }
       case 'pkg-retry': await loadPkg(d.pkg as string, true); break;
@@ -2485,6 +2505,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       case 'set-theme': setTheme(d.id as ThemePref); break;
       case 'palette-obj': openPalette('obj'); break;
       case 'switch': await switchConn(d.id as string); break;
+      case 'of-goto': document.getElementById(d.id as string)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); break;
       case 'xml-mode': { const t = cur(); if (t && isForm(t)) { t.raw = d.id === 'xml'; renderAll(); if (t.raw) setTimeout(() => { cm.refresh(); cm.focus(); }, 0); } break; }
       case 'xf-add': case 'xf-del': {
         const t = cur(); const doc = t && docs.get(docKey(t, 'main'));
@@ -2516,7 +2537,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       case 'git-show': { const p = d.pkg as string; if (!isFav(p)) await addFavorite(p); S.view = 'explorer'; renderAll(); break; }
       case 'win-min': win?.minimize(); break;
       case 'win-max': win?.toggleMaximize(); break;
-      case 'win-close': if (S.tabs.some(isDirty) && !(await confirmBox('Close Nusa ADT?', 'Some editors have unsaved changes. They are lost if you close now.', 'Close', true))) break; win?.close(); break;
+      case 'win-close': if (S.tabs.some(isDirty) && !(await confirmBox('Close Nusa Studio?', 'Some editors have unsaved changes. They are lost if you close now.', 'Close', true))) break; win?.close(); break;
     }
   });
   $('#tabs').addEventListener('auxclick', (e) => {

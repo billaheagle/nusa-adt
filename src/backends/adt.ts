@@ -177,7 +177,7 @@ export class AdtBackend implements Backend {
   async write(conn: string, obj: ObjRef, include: Include, source: string, lock: string, transport?: string) {
     const cl = this.c(conn);
     if (TYPE_INFO[obj.type].editor === 'xml') {
-      if (TYPE_INFO[obj.type].readOnly) throw new Error('Nusa ADT shows this object type read-only. Change it in Eclipse ADT or SAP GUI.');
+      if (TYPE_INFO[obj.type].readOnly) throw new Error('Nusa Studio shows this object type read-only. Change it in Eclipse ADT or SAP GUI.');
       const ct = this.xmlType.get(conn + '|' + obj.uri) || (await cl.objectXml(obj.uri)).contentType;
       await cl.putObjectXml(obj.uri, source, ct, lock, transport);
       if (transport) this.transportOf.set(conn + '|' + obj.uri, transport);

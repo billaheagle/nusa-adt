@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="src-tauri/icons/128x128.png" width="88" alt="Nusa ADT logo">
+<img src="src-tauri/icons/128x128.png" width="88" alt="Nusa Studio logo">
 
-# Nusa ADT
+# Nusa Studio
 
 **A lightweight desktop IDE for ABAP.**
 The workflow of Eclipse ADT in a fast, VS Code-style window.
@@ -16,9 +16,9 @@ The workflow of Eclipse ADT in a fast, VS Code-style window.
 
 </div>
 
-![Nusa ADT in dark mode with context-aware completion](docs/screenshot-dark.png)
+![Nusa Studio in dark mode with context-aware completion](docs/screenshot-dark.png)
 
-> **Bahasa Indonesia.** Nusa ADT adalah IDE ABAP ringan dengan tampilan ala VS Code.
+> **Bahasa Indonesia.** Nusa Studio adalah IDE ABAP ringan dengan tampilan ala VS Code.
 > Terhubung ke S/4HANA on-premise, S/4HANA Cloud Public Edition, BTP ABAP Environment, dan ABAP runner lokal lewat
 > layanan ADT REST yang sama dengan Eclipse, jadi tidak ada yang perlu dipasang di sisi SAP.
 > Unduh installer di halaman [Releases](../../releases).
@@ -27,9 +27,9 @@ The workflow of Eclipse ADT in a fast, VS Code-style window.
 
 ## Why switch from Eclipse ADT?
 
-Nusa ADT uses the same ADT services as Eclipse, so nothing changes on the SAP side and the Eclipse shortcuts still work. What you get on top:
+Nusa Studio uses the same ADT services as Eclipse, so nothing changes on the SAP side and the Eclipse shortcuts still work. What you get on top:
 
-| | Eclipse ADT | Nusa ADT |
+| | Eclipse ADT | Nusa Studio |
 |---|---|---|
 | Getting started | Install Eclipse and the ADT plugins, create a workspace and an ABAP project per system | Run the app (or the portable exe), add a system |
 | Switching systems | Separate projects in the Project Explorer | One click; every system keeps its own open editors |
@@ -42,7 +42,7 @@ Nusa ADT uses the same ADT services as Eclipse, so nothing changes on the SAP si
 
 New users see a short *Coming from Eclipse ADT* guide; it is also in the command palette.
 
-Where Eclipse ADT is still ahead: the debugger, refactorings such as rename and extract method, function groups and modules, and the specialised editors of some object types (Nusa ADT shows authorization objects, IAM apps, communication scenarios and similar objects in a generic form). Nusa ADT is a preview and has not been verified against a live system yet (see [Status](#status)), so keep Eclipse at hand for those.
+Where Eclipse ADT is still ahead: the debugger, refactorings such as rename and extract method, function groups and modules, and the specialised editors of some object types (Nusa Studio shows authorization objects, IAM apps, communication scenarios and similar objects in a generic form). Nusa Studio is a preview and has not been verified against a live system yet (see [Status](#status)), so keep Eclipse at hand for those.
 
 ## Features
 
@@ -97,7 +97,7 @@ Where Eclipse ADT is still ahead: the debugger, refactorings such as rename and 
 <details>
 <summary><b>Light theme and Transport Organizer</b></summary>
 
-![Nusa ADT in light mode with the Transport Organizer](docs/screenshot-light.png)
+![Nusa Studio in light mode with the Transport Organizer](docs/screenshot-light.png)
 
 </details>
 
@@ -147,17 +147,17 @@ Every [release](../../releases) has two kinds of downloads:
 
 | | Install | Portable (no install, just run) |
 |---|---|---|
-| Windows 10/11 | `Nusa.ADT_x.y.z_x64-setup.exe` or `.msi` | `Nusa-ADT-x.y.z-portable-x64.exe` |
-| macOS 11+ | `.dmg` | `Nusa-ADT-x.y.z-portable-macos.zip` |
-| Linux | `.deb` | `Nusa-ADT-x.y.z-portable-x86_64.AppImage` |
+| Windows 10/11 | `Nusa.Studio_x.y.z_x64-setup.exe` or `.msi` | `Nusa-Studio-x.y.z-portable-x64.exe` |
+| macOS 11+ | `.dmg` | `Nusa-Studio-x.y.z-portable-macos.zip` |
+| Linux | `.deb` | `Nusa-Studio-x.y.z-portable-x86_64.AppImage` |
 
 The portable Windows build is a single `.exe`: put it anywhere (Downloads, a USB stick) and double-click. It keeps its system list in a `nusa-adt-data` folder next to the file; passwords stay in the Windows Credential Manager. It needs the Microsoft Edge WebView2 runtime, which Windows 10 and 11 already include.
 
 The builds are not code-signed yet:
 
 - **Windows**: SmartScreen asks once. Click **More info → Run anyway**.
-- **macOS**: unzip, then right-click **Nusa ADT** and choose **Open** the first time. On macOS 15, use **System Settings → Privacy & Security → Open Anyway**.
-- **Linux**: `chmod +x Nusa-ADT-*.AppImage` and run it.
+- **macOS**: unzip, then right-click **Nusa Studio** and choose **Open** the first time. On macOS 15, use **System Settings → Privacy & Security → Open Anyway**.
+- **Linux**: `chmod +x Nusa-Studio-*.AppImage` and run it.
 
 To build everything yourself, open **Actions → Build desktop app → Run workflow**. A quick `rust` job compiles and tests the Rust core first, so a compile error shows up within minutes. A draft release with all files appears after 15–25 minutes. The same files are also attached to the workflow run under **Artifacts**, together with `Cargo.lock`; commit that file to `src-tauri/` so later builds use the same crate versions.
 
@@ -170,17 +170,17 @@ To work on a real system, open **Systems** (the server icon at the bottom of the
 | Type | What to enter |
 |---|---|
 | **S/4HANA or NetWeaver** | URL such as `https://host:44300` (HTTPS port from transaction `SMICM` → Services), client and user. The password is asked once and kept in the keychain. Systems with SAML or Kerberos can use *Browser logon* instead. |
-| **S/4HANA Cloud Public Edition** | The address of the developer extensibility system as you open it in the browser, such as `https://my123456.s4hana.cloud.sap` (a launchpad link with `/ui#Shell-home` works too, and so does the `-api` URL). The browser opens and you log on as in the Fiori launchpad; Nusa ADT then works against `my123456-api.s4hana.cloud.sap`. |
+| **S/4HANA Cloud Public Edition** | The address of the developer extensibility system as you open it in the browser, such as `https://my123456.s4hana.cloud.sap` (a launchpad link with `/ui#Shell-home` works too, and so does the `-api` URL). The browser opens and you log on as in the Fiori launchpad; Nusa Studio then works against `my123456-api.s4hana.cloud.sap`. |
 | **BTP ABAP Environment** | Either the service key JSON (OAuth, the token refreshes on its own) or just the system URL, such as `https://<id>.abap.eu10.hana.ondemand.com`, with *Browser logon*. |
 | **Local runner** | The runner's URL, for example `http://localhost:7777`. See [docs/RUNNER-PROTOCOL.md](docs/RUNNER-PROTOCOL.md). |
 
-On the SAP side, the ICF services under `/sap/bc/adt` must be active (`SICF`) and the user needs the same authorizations as for Eclipse ADT. On S/4HANA Cloud and BTP that means a business role with the **Developer** catalog (`SAP_BR_DEVELOPER`); without it, logon succeeds but every request returns 401, and Nusa ADT says so. If logon expires, use **Log in again** on the system in the Systems view. If Eclipse ADT already works with the system, Nusa ADT will too. For development systems with self-signed certificates, tick *Accept a self-signed certificate*.
+On the SAP side, the ICF services under `/sap/bc/adt` must be active (`SICF`) and the user needs the same authorizations as for Eclipse ADT. On S/4HANA Cloud and BTP that means a business role with the **Developer** catalog (`SAP_BR_DEVELOPER`); without it, logon succeeds but every request returns 401, and Nusa Studio says so. If logon expires, use **Log in again** on the system in the Systems view. If Eclipse ADT already works with the system, Nusa Studio will too. For development systems with self-signed certificates, tick *Accept a self-signed certificate*.
 
 ## How it works
 
 ```mermaid
 flowchart TB
-  subgraph app["Nusa ADT window · system webview"]
+  subgraph app["Nusa Studio window · system webview"]
     direction LR
     ui["Workbench<br/>explorer · editor · panels"]
     cmp["Completion engine<br/>context · type inference"]
@@ -306,11 +306,11 @@ Completion works out where the cursor is, infers variable types from the source,
 
 ## Status
 
-Nusa ADT is a preview. What has been verified so far:
+Nusa Studio is a preview. What has been verified so far:
 
 | Area | Status |
 |---|---|
-| Workbench UI end to end (DEMO system, real editor) | 24 scenarios, including preview tabs, Format Document, the IAM app form and creating a communication scenario; edit, save, activate, completion while typing, packages, new objects, service binding publish, data preview, RAP generator, ABAP Cleaner, abapGit, compare and local history, draft recovery, multi-cursor and line editing, systems, themes, phone width |
+| Workbench UI end to end (DEMO system, real editor) | 26 scenarios, including preview tabs, collapse all, Format Document, the IAM app form and creating a communication scenario; edit, save, activate, completion while typing, packages, new objects, service binding publish, data preview, RAP generator, ABAP Cleaner, abapGit, compare and local history, draft recovery, multi-cursor and line editing, systems, themes, phone width |
 | Desktop shell against an in-memory ADT server | tested: title bar, error pages, save with transport, activate, session restore |
 | ABAP analysis, formatter, cleaner, RAP generator, diff, object types, completion contexts | 60 unit tests; the formatter is checked to keep every token of the sample sources |
 | ADT response parsing and edit cycle | tested against recorded payload shapes and an in-memory ADT server |

@@ -85,71 +85,122 @@ const isTable = (e: Element) => {
   return k.length > 0 && k.every(c => c.nodeName === k[0].nodeName && c.children.length === 0);
 };
 const hidden = (e: Element) => HIDDEN_NS.has(e.namespaceURI || '') || (e.namespaceURI === ADT && e.localName === 'packageRef');
+/** identifiers (ZUI_X_O4, /DMO/FLIGHT, 0001) read better in the code font */
+const isCode = (v: string) => /^[A-Z0-9_/$*-]{2,}$/.test(v) && !/^(TRUE|FALSE)$/.test(v);
 
-function input(xpath: string, value: string, ro: boolean, label: string) {
+let uid = 0;
+const LOCK = '<svg class="of-lock" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="1.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
+
+/** One labelled field. Editable fields look like inputs; read-only values are plain text. */
+function field(xpath: string, value: string, ro: boolean, label: string, tech: string, lockIcon: boolean): string {
+  const id = `of-f-${++uid}`;
+  const wide = value.length > 60;
   if (value === 'true' || value === 'false') {
-    return `<label class="xf-check"><input type="checkbox" data-xpath="${esc(xpath)}" ${value === 'true' ? 'checked' : ''} ${ro ? 'disabled' : ''}><span>${esc(label)}</span></label>`;
+    if (ro) return `<div class="of-field ro"><span class="of-label" title="${esc(tech)}">${esc(label)}${lockIcon ? LOCK : ''}</span><div class="of-value">${value === 'true' ? '<span class="of-yes">Yes</span>' : '<span class="of-no">No</span>'}</div></div>`;
+    return `<div class="of-field"><span class="of-label" title="${esc(tech)}">${esc(label)}</span><label class="of-switch"><input type="checkbox" role="switch" data-xpath="${esc(xpath)}" ${value === 'true' ? 'checked' : ''}><i aria-hidden="true"></i><span>${value === 'true' ? 'On' : 'Off'}</span></label></div>`;
   }
-  const long = value.length > 70;
-  const ctl = long
-    ? `<textarea data-xpath="${esc(xpath)}" rows="3" ${ro ? 'readonly' : ''} spellcheck="false">${esc(value)}</textarea>`
-    : `<input data-xpath="${esc(xpath)}" value="${esc(value)}" ${ro ? 'readonly' : ''} spellcheck="false" autocomplete="off">`;
-  return `<label class="field xf-field"><span>${esc(label)}</span>${ctl}</label>`;
+  if (ro) return `<div class="of-field ro ${wide ? 'wide' : ''}"><span class="of-label" title="${esc(tech)}">${esc(label)}${lockIcon ? LOCK : ''}</span><div class="of-value ${isCode(value) ? 'mono' : ''}">${value ? esc(value) : '<span class="of-empty">Not set</span>'}</div></div>`;
+  const ctl = wide
+    ? `<textarea id="${id}" class="of-input" data-xpath="${esc(xpath)}" rows="3" spellcheck="false">${esc(value)}</textarea>`
+    : `<input id="${id}" class="of-input ${isCode(value) || !value ? 'mono' : ''}" data-xpath="${esc(xpath)}" value="${esc(value)}" spellcheck="false" autocomplete="off">`;
+  return `<div class="of-field ${wide ? 'wide' : ''}"><label class="of-label" for="${id}" title="${esc(tech)}">${esc(label)}</label>${ctl}</div>`;
 }
 
-function node(e: Element, path: string, ro: boolean, depth: number): string {
-  if (hidden(e)) return '';
-  const label = humanize(e.localName);
-  const fields = attrs(e).map(a => input(`${path}@${a.name}`, a.value, ro, humanize(a.localName))).join('');
+function fieldsOf(e: Element, path: string, ro: boolean): string {
+  return attrs(e).map(a => field(`${path}@${a.name}`, a.value, ro, humanize(a.localName), a.name, false)).join('');
+}
+
+function table(e: Element, path: string, ro: boolean): string {
   const kids = Array.from(e.children);
-  if (isTable(e)) {
-    const cols: string[] = [];
-    kids.forEach(k => attrs(k).forEach(a => { if (!cols.includes(a.name)) cols.push(a.name); }));
-    const hasText = kids.some(k => (k.textContent || '').trim());
-    const head = cols.map(c => `<th>${esc(humanize(c.split(':').pop() as string))}</th>`).join('') + (hasText ? '<th>Value</th>' : '');
-    const rows = kids.map((k, i) => {
-      const rp = `${path}/${i}`.replace(/^\//, '');
-      const cells = cols.map(c => {
-        const v = k.getAttribute(c);
-        return `<td>${v === null ? '' : v === 'true' || v === 'false'
-          ? `<input type="checkbox" data-xpath="${esc(rp)}@${esc(c)}" ${v === 'true' ? 'checked' : ''} ${ro ? 'disabled' : ''} aria-label="${esc(humanize(c.split(':').pop() as string))}">`
-          : `<input data-xpath="${esc(rp)}@${esc(c)}" value="${esc(v)}" ${ro ? 'readonly' : ''} spellcheck="false" autocomplete="off" aria-label="${esc(humanize(c.split(':').pop() as string))}">`}</td>`;
-      }).join('') + (hasText ? `<td><input data-xpath="${esc(rp)}#" value="${esc((k.textContent || '').trim())}" ${ro ? 'readonly' : ''}></td>` : '');
-      return `<tr>${cells}${ro ? '' : `<td class="xf-row-act"><button type="button" class="icon-btn" data-act="xf-del" data-xpath="${esc(rp)}" title="Remove row" aria-label="Remove row">×</button></td>`}</tr>`;
-    }).join('');
-    const last = `${path}/${kids.length - 1}`.replace(/^\//, '');
-    return `<section class="xf-sec" style="--xd:${depth}"><h3>${esc(label)} <small>${kids.length}</small></h3>${fields ? `<div class="xf-grid">${fields}</div>` : ''}
-      <div class="xf-table"><table><thead><tr>${head}${ro ? '' : '<th></th>'}</tr></thead><tbody>${rows}</tbody></table></div>
-      ${ro ? '' : `<button type="button" class="btn small ghost" data-act="xf-add" data-xpath="${esc(last)}">+ Add ${esc(humanize(kids[0].localName).toLowerCase())}</button>`}</section>`;
-  }
-  if (!kids.length) {
-    const text = (e.textContent || '').trim();
-    if (!attrs(e).length && !text) return `<section class="xf-sec" style="--xd:${depth}"><h3>${esc(label)}</h3><p class="muted">No entries</p></section>`;
-    if (!attrs(e).length) return input(`${path}#`, text, ro, label);
-    return `<section class="xf-sec" style="--xd:${depth}"><h3>${esc(label)}</h3><div class="xf-grid">${fields}${text ? input(`${path}#`, text, ro, 'Value') : ''}</div></section>`;
-  }
-  const inner = kids.map((k, i) => node(k, `${path}/${i}`.replace(/^\//, ''), ro, depth + 1)).join('');
-  return `<section class="xf-sec" style="--xd:${depth}"><h3>${esc(label)}</h3>${fields ? `<div class="xf-grid">${fields}</div>` : ''}${inner}</section>`;
+  const cols: string[] = [];
+  kids.forEach(k => attrs(k).forEach(a => { if (!cols.includes(a.name)) cols.push(a.name); }));
+  const hasText = kids.some(k => (k.textContent || '').trim());
+  const col = (c: string) => humanize(c.split(':').pop() as string);
+  const head = cols.map(c => `<th scope="col" title="${esc(c)}">${esc(col(c))}</th>`).join('') + (hasText ? '<th scope="col">Value</th>' : '');
+  const cell = (rp: string, c: string, v: string | null) => {
+    if (v === null) return '<td><span class="of-empty">–</span></td>';
+    if (v === 'true' || v === 'false') {
+      return `<td class="of-c-bool">${ro ? (v === 'true' ? '<span class="of-yes">Yes</span>' : '<span class="of-no">No</span>')
+        : `<label class="of-switch sm"><input type="checkbox" role="switch" data-xpath="${esc(rp)}@${esc(c)}" ${v === 'true' ? 'checked' : ''} aria-label="${esc(col(c))}"><i aria-hidden="true"></i></label>`}</td>`;
+    }
+    return ro ? `<td><span class="${isCode(v) ? 'mono' : ''}">${v ? esc(v) : '<span class="of-empty">–</span>'}</span></td>`
+      : `<td><input class="of-cell ${isCode(v) || !v ? 'mono' : ''}" data-xpath="${esc(rp)}@${esc(c)}" value="${esc(v)}" spellcheck="false" autocomplete="off" aria-label="${esc(col(c))}"></td>`;
+  };
+  const rows = kids.map((k, i) => {
+    const rp = `${path}/${i}`.replace(/^\//, '');
+    const txt = (k.textContent || '').trim();
+    return `<tr>${cols.map(c => cell(rp, c, k.getAttribute(c))).join('')}${hasText ? (ro ? `<td>${esc(txt)}</td>` : `<td><input class="of-cell" data-xpath="${esc(rp)}#" value="${esc(txt)}" aria-label="Value"></td>`) : ''}
+      ${ro ? '' : `<td class="of-row-act"><button type="button" class="of-del" data-act="xf-del" data-xpath="${esc(rp)}" title="Remove this row" aria-label="Remove row ${i + 1}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button></td>`}</tr>`;
+  }).join('');
+  const last = `${path}/${kids.length - 1}`.replace(/^\//, '');
+  const noun = humanize(kids[0].localName).toLowerCase();
+  return `<div class="of-table"><table><thead><tr>${head}${ro ? '' : '<th class="of-row-act"><span class="sr">Actions</span></th>'}</tr></thead><tbody>${rows}</tbody></table></div>
+    ${ro ? '' : `<button type="button" class="of-add" data-act="xf-add" data-xpath="${esc(last)}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Add ${esc(noun)}</button>`}`;
 }
 
-export function renderXmlForm(xml: string, o: { readOnly: boolean; typeLabel: string; note?: string }): string {
+/** Content of a section: its fields, then a table or sub-sections. */
+function content(e: Element, path: string, ro: boolean, level: number): string {
+  const kids = Array.from(e.children).filter(k => !hidden(k));
+  const fields = fieldsOf(e, path, ro);
+  const text = (e.textContent || '').trim();
+  let out = fields ? `<div class="of-grid">${fields}</div>` : '';
+  if (isTable(e)) return out + table(e, path, ro);
+  if (!kids.length) {
+    if (!attrs(e).length) out += text ? `<div class="of-grid">${field(`${path}#`, text, ro, 'Value', e.nodeName, false)}</div>` : '<p class="of-none">No entries yet. Add them in the XML view.</p>';
+    return out;
+  }
+  // leaf children without attributes are simple fields of this section
+  const simple = kids.filter(k => !k.children.length && !attrs(k).length);
+  const rest = kids.filter(k => !simple.includes(k));
+  if (simple.length) {
+    out += `<div class="of-grid">${simple.map(k => field(`${path}/${Array.from(e.children).indexOf(k)}#`.replace(/^\//, ''), (k.textContent || '').trim(), ro, humanize(k.localName), k.nodeName, false)).join('')}</div>`;
+  }
+  for (const k of rest) {
+    const kp = `${path}/${Array.from(e.children).indexOf(k)}`.replace(/^\//, '');
+    const count = isTable(k) ? `<span class="of-count">${k.children.length}</span>` : '';
+    out += `<div class="of-sub lv${Math.min(level, 2)}"><h3>${esc(humanize(k.localName))}${count}</h3>${content(k, kp, ro, level + 1)}</div>`;
+  }
+  return out;
+}
+
+export interface FormHeader {
+  readOnly: boolean; typeLabel: string; glyph: string; status?: { text: string; tone: 'ok' | 'warn' | 'muted' }; note?: string;
+}
+
+export function renderXmlForm(xml: string, o: FormHeader): string {
+  uid = 0;
   let doc: Document;
   try { doc = parse(xml); } catch (e) {
-    return `<div class="xf"><div class="notice err">The XML document has an error, so the form cannot show it: ${esc((e as Error).message)}</div><p><button class="btn" data-act="xml-mode" data-id="xml">Open the XML</button></p></div>`;
+    return `<div class="of"><div class="of-banner err">The XML document has an error, so the form cannot show it: ${esc((e as Error).message)}<button class="btn small" data-act="xml-mode" data-id="xml">Open the XML</button></div></div>`;
   }
   const r = doc.documentElement;
   const a = (n: string) => r.getAttributeNS(ADT, n) || '';
   const pkg = Array.from(r.children).find(c => c.namespaceURI === ADT && c.localName === 'packageRef')?.getAttributeNS(ADT, 'name') || '';
   const descAttr = Array.from(r.attributes).find(x => x.namespaceURI === ADT && x.localName === 'description');
-  const facts = HEADER_ATTRS.map(([k, l]) => [l, a(k)]).filter(([, v]) => v);
-  const body = Array.from(r.children).map((k, i) => node(k, String(i), o.readOnly, 0)).join('');
-  return `<div class="xf">
-    <header class="xf-head">
-      <div class="xf-title"><h2>${esc(a('name') || r.localName)}</h2><span class="pill">${esc(o.typeLabel)}</span>${o.readOnly ? '<span class="pill p-warn">Read-only</span>' : ''}</div>
-      ${descAttr ? input(`@${descAttr.name}`, descAttr.value, o.readOnly, 'Description') : ''}
-      <dl class="xf-facts">${pkg ? `<dt>Package</dt><dd>${esc(pkg)}</dd>` : ''}${facts.map(([l, v]) => `<dt>${esc(l)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>
-      ${o.note ? `<p class="note">${esc(o.note)}</p>` : ''}
+  const facts: [string, string][] = ([['Package', pkg], ...HEADER_ATTRS.filter(([k]) => k !== 'type').map(([k, l]) => [l, a(k)])] as [string, string][]).filter(([, v]) => v);
+  // sections: top-level elements; plain values of the root are collected in "General"
+  const kids = Array.from(r.children).map((k, i) => [k, String(i)] as [Element, string]).filter(([k]) => !hidden(k));
+  const simple = kids.filter(([k]) => !k.children.length && !attrs(k).length);
+  const sections: { id: string; title: string; count?: number; html: string }[] = [];
+  const rootFields = fieldsOf(r, '', o.readOnly);
+  if (simple.length || rootFields) {
+    sections.push({ id: 'of-sec-general', title: 'General', html: `<div class="of-grid">${rootFields}${simple.map(([k, p]) => field(`${p}#`, (k.textContent || '').trim(), o.readOnly, humanize(k.localName), k.nodeName, false)).join('')}</div>` });
+  }
+  kids.filter(([k]) => !simple.some(([s]) => s === k)).forEach(([k, p], i) => {
+    sections.push({ id: `of-sec-${i}`, title: humanize(k.localName), count: isTable(k) ? k.children.length : undefined, html: content(k, p, o.readOnly, 1) });
+  });
+  const tone = o.status ? `p-${o.status.tone === 'ok' ? 'ok' : o.status.tone === 'warn' ? 'warn' : 'muted'}` : '';
+  return `<div class="of">
+    <header class="of-head">
+      <div class="of-id">${o.glyph}<div class="of-titles"><div class="of-kicker">${esc(o.typeLabel)}</div><h1>${esc(a('name') || r.localName)}</h1></div>
+        <div class="of-badges">${o.status ? `<span class="pill ${tone}">${esc(o.status.text)}</span>` : ''}${o.readOnly ? '<span class="pill p-muted">Read-only</span>' : ''}</div></div>
+      ${descAttr ? `<div class="of-desc">${field(`@${descAttr.name}`, descAttr.value, o.readOnly, 'Description', descAttr.name, false)}</div>` : ''}
+      ${facts.length ? `<dl class="of-meta">${facts.map(([l, v]) => `<div><dt>${esc(l)}</dt><dd class="${isCode(v) ? 'mono' : ''}">${esc(v)}</dd></div>`).join('')}</dl>` : ''}
     </header>
-    ${body || '<p class="muted">This object has no further properties.</p>'}
+    ${o.note ? `<div class="of-banner">${esc(o.note)}</div>` : ''}
+    <div class="of-body">
+      <div class="of-main">${sections.map(sec => `<section class="of-card" id="${sec.id}" aria-labelledby="${sec.id}-h"><header><h2 id="${sec.id}-h">${esc(sec.title)}</h2>${sec.count !== undefined ? `<span class="of-count">${sec.count}</span>` : ''}</header>${sec.html}</section>`).join('') || '<p class="of-none">This object has no further properties.</p>'}</div>
+      ${sections.length >= 3 ? `<nav class="of-toc" aria-label="Sections"><div class="of-toc-h">On this page</div>${sections.map(sec => `<button type="button" data-act="of-goto" data-id="${sec.id}">${esc(sec.title)}</button>`).join('')}</nav>` : ''}
+    </div>
   </div>`;
 }

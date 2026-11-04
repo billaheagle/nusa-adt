@@ -241,7 +241,7 @@ export class AdtClient {
     const code = TYPE_INFO[type].adtType || type;
     const examples = await this.searchObjects('*', code, 5).catch(() => []);
     const ex = examples.find(e => e.uri && e.uri.includes('/sap/bc/adt/') && !e.uri.includes('/vit/'));
-    if (!ex) throw new AdtError(`This system has no ${TYPE_INFO[type].label} that Nusa ADT can use as a model for the format, so it cannot create one yet. Create the first one in Eclipse ADT; after that Nusa ADT can create and edit more.`, 400);
+    if (!ex) throw new AdtError(`This system has no ${TYPE_INFO[type].label} that Nusa Studio can use as a model for the format, so it cannot create one yet. Create the first one in Eclipse ADT; after that Nusa Studio can create and edit more.`, 400);
     const { xml, contentType } = await this.objectXml(ex.uri);
     const body = newObjectXml(xml, { name, desc, pkg, user });
     const collection = ex.uri.replace(/\/[^/]+$/, '');

@@ -94,7 +94,7 @@ const xe = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace
 
 /**
  * XML documents of form-based objects in the DEMO system. Real systems define their own
- * formats; Nusa ADT reads and writes those as they come and never relies on these shapes.
+ * formats; Nusa Studio reads and writes those as they come and never relies on these shapes.
  */
 export function demoXml(type: ObjType, name: string, desc: string, pkg: string, body?: string): string {
   const p = type.toLowerCase();

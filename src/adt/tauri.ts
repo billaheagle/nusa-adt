@@ -2,6 +2,10 @@
 import { Connection } from '../core/types';
 import { HttpRequest, HttpResponse, HttpTransport } from './client';
 import { ConnStore } from '../backends/adt';
+import { logDiag } from '../core/diag';
+
+/** First readable sentence of an error body (SAP returns XML exceptions or HTML pages). */
+const shortBody = (b: string) => (b || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
 
 type Invoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 const invoke: Invoke = (cmd, args) => {
@@ -13,7 +17,18 @@ const invoke: Invoke = (cmd, args) => {
 export class TauriTransport implements HttpTransport {
   async request(conn: string, req: HttpRequest): Promise<HttpResponse> {
     const query = Object.fromEntries(Object.entries(req.query || {}).filter(([, v]) => v !== undefined)) as Record<string, string>;
-    return invoke<HttpResponse>('adt_request', { conn, req: { ...req, query, headers: req.headers || {}, body: req.body ?? null, stateful: !!req.stateful, timeoutMs: req.timeoutMs ?? null } });
+    const started = performance.now();
+    const what = `${req.method} ${req.path}${req.stateful ? ' (stateful)' : ''}`;
+    try {
+      const r = await invoke<HttpResponse>('adt_request', { conn, req: { ...req, query, headers: req.headers || {}, body: req.body ?? null, stateful: !!req.stateful, timeoutMs: req.timeoutMs ?? null } });
+      const ms = Math.round(performance.now() - started);
+      const err = r.status >= 400 ? ' ' + (r.headers?.['sap-err-id'] || shortBody(r.body)) : '';
+      logDiag(conn, `${what} → ${r.status} ${ms} ms${err}`);
+      return r;
+    } catch (e) {
+      logDiag(conn, `${what} ✕ ${e instanceof Error ? e.message : String(e)}`);
+      throw e;
+    }
   }
 }
 

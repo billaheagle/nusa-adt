@@ -140,3 +140,44 @@ test('DEMO backend: packages, new types, publish, data preview, abapGit, delete'
   await b.deleteObject('s4d', t, 'S4DK900123');
   assert.ok(!(await b.packageContents('s4d', 'ZNUSA_NEW')).objects.length);
 });
+
+import { systemHosts, systemUrl } from '../src/core/sysurl';
+test('system URLs: launchpad links and API hosts map to the ADT host', () => {
+  const want = { api: 'https://my408355-api.s4hana.cloud.sap', ui: 'https://my408355.s4hana.cloud.sap' };
+  assert.deepEqual(systemHosts('https://my408355.s4hana.cloud.sap/ui#Shell-home'), want);
+  assert.deepEqual(systemHosts('https://my408355-api.s4hana.cloud.sap/'), want);
+  assert.deepEqual(systemHosts('https://1a2b.abap-web.eu10.hana.ondemand.com/ui'), { api: 'https://1a2b.abap.eu10.hana.ondemand.com', ui: 'https://1a2b.abap-web.eu10.hana.ondemand.com' });
+  assert.equal(systemUrl('s4', 'https://s4d.example.com:44300/sap/bc/gui/'), 'https://s4d.example.com:44300');
+  assert.equal(systemUrl('runner', 'http://localhost:7777/'), 'http://localhost:7777');
+});
+
+import { addSnapshot, diffLines, diffStats, hunks } from '../src/core/diff';
+import { diagReport, logDiag, redact } from '../src/core/diag';
+test('diff: minimal line changes, hunks with context', () => {
+  const a = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j'];
+  const b = ['a', 'b', 'X', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k'];
+  const ops = diffLines(a, b);
+  assert.deepEqual(diffStats(ops), { added: 2, removed: 1 });
+  assert.equal(ops.filter(o => o.t !== 'add').map(o => o.text).join(''), a.join(''));
+  assert.equal(ops.filter(o => o.t !== 'del').map(o => o.text).join(''), b.join(''));
+  const h = hunks(ops, 1);
+  assert.equal(h.length, 2);
+  assert.deepEqual(h[0].ops.map(o => o.t), ['same', 'del', 'add', 'same']);
+});
+test('local history keeps newest first without duplicates', () => {
+  let l = addSnapshot([], { at: 1, text: 'v1', note: 'Saved' });
+  l = addSnapshot(l, { at: 2, text: 'v1', note: 'Saved' });
+  l = addSnapshot(l, { at: 3, text: 'v2', note: 'Saved' });
+  assert.deepEqual(l.map(s => s.text), ['v2', 'v1']);
+  for (let i = 0; i < 40; i++) l = addSnapshot(l, { at: i, text: 'x' + i, note: '' });
+  assert.equal(l.length, 25);
+});
+test('diagnostics never contain secrets', () => {
+  assert.equal(redact('GET /x?reentrance-ticket=AbC123&b=1'), 'GET /x?reentrance-ticket=***&b=1');
+  assert.equal(redact('Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.x'), 'Authorization: Bearer ***');
+  logDiag('s4h', 'POST /sap/bc/adt/discovery → 401 12 ms ICFLOGONREQUIRED');
+  const r = diagReport({ System: 'S4H', Empty: '' }, 's4h');
+  assert.match(r, /System: S4H/);
+  assert.doesNotMatch(r, /Empty/);
+  assert.match(r, /401 12 ms ICFLOGONREQUIRED/);
+});

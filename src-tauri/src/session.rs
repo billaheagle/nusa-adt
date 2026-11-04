@@ -6,7 +6,7 @@
 
 use crate::connections::{Auth, Connection, Kind};
 use crate::oauth;
-use reqwest::cookie::Jar;
+use reqwest::cookie::{CookieStore, Jar};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, Method, Url};
 use serde::{Deserialize, Serialize};
@@ -58,6 +58,11 @@ fn build_client(conn: &Connection, jar: Arc<Jar>) -> Result<Client, String> {
         .cookie_provider(jar)
         .user_agent(concat!("NusaADT/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(15));
+    if conn.auth == Auth::Sso {
+        // An expired session answers with a redirect to the identity provider; following it
+        // would hand an HTML login page to the XML parsers. Treat it as 401 instead.
+        b = b.redirect(reqwest::redirect::Policy::none());
+    }
     if conn.allow_self_signed.unwrap_or(false) {
         // Opt-in per connection for development systems with self-signed certificates.
         b = b.danger_accept_invalid_certs(true);
@@ -85,8 +90,56 @@ impl Session {
         }))
     }
 
+    /// Origin for ADT requests. For SAP systems any path the user pasted (a launchpad link
+    /// such as `/ui#Shell-home`) is dropped, and S/4HANA Cloud uses its `-api` host.
     fn base(&self) -> String {
-        self.conn.url.trim_end_matches('/').to_string()
+        if self.conn.kind == Kind::Runner {
+            return self.conn.url.trim_end_matches('/').to_string();
+        }
+        oauth::system_hosts(&self.conn.url).0
+    }
+
+    /// Browser logon: get a reentrance ticket on the UI host, exchange it for a security
+    /// session on the API host (stateless jar), then share that session with the stateful jar.
+    async fn sso_logon(&self, app: &tauri::AppHandle) -> Result<String, String> {
+        let (api, ui) = oauth::system_hosts(&self.conn.url);
+        let client = if self.conn.kind == Kind::S4 {
+            Some(self.conn.client.as_str())
+        } else {
+            None
+        };
+        let ticket =
+            oauth::reentrance_ticket(app, &ui, client, Some(self.conn.language.as_str())).await?;
+        let probe = build_client(&self.conn, self.jars[0].clone())?;
+        let res = probe
+            .get(format!("{api}/sap/bc/adt/core/discovery"))
+            .query(&self.sap_query())
+            .header("MYSAPSSO2", &ticket)
+            .header("x-sap-security-session", "create")
+            .header("Accept", "application/atomsvc+xml")
+            .send()
+            .await
+            .map_err(|e| net_err(&self.conn, e))?;
+        let status = res.status().as_u16();
+        if status == 401
+            || status == 403
+            || res.status().is_redirection()
+            || logon_page(res.headers())
+        {
+            return Err(format!(
+                "{} did not accept the browser logon (HTTP {status} from {api}, logon page {ui}). Check that your user has a business role with the developer catalog (SAP_BR_DEVELOPER) and that the URL is the system you logged on to.",
+                self.conn.sid
+            ));
+        }
+        let url = Url::parse(&api).map_err(|e| e.to_string())?;
+        if let Some(cookies) = self.jars[0].cookies(&url) {
+            for part in cookies.to_str().unwrap_or("").split("; ") {
+                if !part.is_empty() {
+                    self.jars[1].add_cookie_str(&format!("{part}; Path=/"), &url);
+                }
+            }
+        }
+        Ok(ticket)
     }
 
     fn sap_query(&self) -> Vec<(String, String)> {
@@ -111,23 +164,7 @@ impl Session {
             Auth::Sso => {
                 let mut ticket = self.sso.lock().await;
                 if ticket.is_none() {
-                    let client = if self.conn.kind == Kind::S4 {
-                        Some(self.conn.client.as_str())
-                    } else {
-                        None
-                    };
-                    let t = oauth::reentrance_ticket(
-                        app,
-                        &self.base(),
-                        client,
-                        Some(self.conn.language.as_str()),
-                    )
-                    .await?;
-                    let url = Url::parse(&self.base()).map_err(|e| e.to_string())?;
-                    for jar in &self.jars {
-                        jar.add_cookie_str(&format!("MYSAPSSO2={t}; Path=/"), &url);
-                    }
-                    *ticket = Some(t);
+                    *ticket = Some(self.sso_logon(app).await?);
                 }
                 Ok(rb)
             }
@@ -160,19 +197,31 @@ impl Session {
         app: &tauri::AppHandle,
     ) -> Result<(), String> {
         let url = format!("{}/sap/bc/adt/core/discovery", self.base());
-        let mut rb = ch
-            .client
-            .get(&url)
-            .query(&self.sap_query())
-            .header("x-csrf-token", "Fetch")
-            .header("Accept", "application/atomsvc+xml");
-        rb = rb.header(
-            "X-sap-adt-sessiontype",
-            if stateful { "stateful" } else { "stateless" },
-        );
-        let rb = self.auth(rb, app).await?;
-        let res = rb.send().await.map_err(|e| net_err(&self.conn, e))?;
-        if res.status().as_u16() == 401 {
+        let mut attempt = 0;
+        let res = loop {
+            let rb = ch
+                .client
+                .get(&url)
+                .query(&self.sap_query())
+                .header("x-csrf-token", "Fetch")
+                .header("Accept", "application/atomsvc+xml")
+                .header(
+                    "X-sap-adt-sessiontype",
+                    if stateful { "stateful" } else { "stateless" },
+                );
+            let rb = self.auth(rb, app).await?;
+            let res = rb.send().await.map_err(|e| net_err(&self.conn, e))?;
+            let logon_wanted = self.conn.auth == Auth::Sso
+                && (res.status().is_redirection() || logon_page(res.headers()));
+            if res.status().as_u16() != 401 && !logon_wanted {
+                break res;
+            }
+            if self.conn.auth == Auth::Sso && attempt == 0 {
+                // the browser session expired: log on again once
+                *self.sso.lock().await = None;
+                attempt += 1;
+                continue;
+            }
             return Err(match self.conn.auth {
                 Auth::Sso => {
                     *self.sso.lock().await = None;
@@ -183,7 +232,7 @@ impl Session {
                 }
                 _ => "Logon failed (HTTP 401). Check user and password.".to_string(),
             });
-        }
+        };
         ch.csrf = res
             .headers()
             .get("x-csrf-token")
@@ -276,7 +325,12 @@ impl Session {
         }
         let rb = self.auth(rb, app).await?;
         let res = rb.send().await.map_err(|e| net_err(&self.conn, e))?;
-        let status = res.status().as_u16();
+        let mut status = res.status().as_u16();
+        if self.conn.auth == Auth::Sso
+            && (res.status().is_redirection() || logon_page(res.headers()))
+        {
+            status = 401; // session gone: the system wants an interactive logon
+        }
         let headers = res
             .headers()
             .iter()
@@ -294,6 +348,14 @@ impl Session {
             body: String::from_utf8_lossy(&bytes).into_owned(),
         })
     }
+}
+
+/// SAP answers an unauthenticated request with an HTML logon form marked by this header.
+fn logon_page(h: &HeaderMap) -> bool {
+    h.get("sap-err-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("ICFLOGONREQUIRED"))
+        .unwrap_or(false)
 }
 
 fn net_err(conn: &Connection, e: reqwest::Error) -> String {

@@ -2,12 +2,15 @@
 // systems, settings and the built-in extensions. Everything that talks to a system goes
 // through the Backend interface.
 
+import { systemHosts, systemUrl } from '../core/sysurl';
+import { addSnapshot, diffLines, diffStats, hunks, Snapshot } from '../core/diff';
+import { diagReport, logDiag } from '../core/diag';
 import {
   AtcFinding, Backend, BindingInfo, Breakpoint, Connection, CreateExtra, DebugState, DebugVar, GitRepo, GROUPS, Hit, Include,
   INCLUDE_LABEL, isCdsLike, Location, ObjRef, ObjState, ObjType, PkgRef, PreviewResult, Problem, Proposal, RunResult, StepKind,
   SystemInfo, Transport, TransportNeed, TYPE_INFO, UnitResult, uriFor,
 } from '../core/types';
-import { bpLines, bpMarker, CM, createEditor, newDoc, startCompletion, wordAt } from './editor';
+import { bpLines, bpMarker, CM, createEditor, deleteLines, duplicateLines, moveLines, newDoc, selectNextOccurrence, startCompletion, wordAt } from './editor';
 import { ic, LOGO } from './icons';
 import { cleanAbap, DEFAULT_RULES, RuleId, RULES } from '../core/cleaner';
 import { planRap, rapNames, validateRap } from '../core/rapgen';
@@ -18,15 +21,17 @@ import { parseTableSource } from '../core/catalog';
 
 type View = 'explorer' | 'search' | 'outline' | 'transports' | 'git' | 'debug' | 'extensions' | 'connections' | 'settings';
 type PanelTab = 'problems' | 'output' | 'unit' | 'atc' | 'where';
-type TabView = 'source' | 'data' | 'binding';
+type TabView = 'source' | 'data' | 'binding' | 'diff';
+interface DiffState { left: string; right: string; leftLabel: string; rightLabel: string; srcKey: string; inc: Include; all?: boolean }
 interface DataState { entity?: string; sql: string; rows: number; result?: PreviewResult; error?: string; running?: boolean }
 interface Tab {
   key: string; conn: string; ref: ObjState; include: Include; lock?: string; view: TabView;
-  data?: DataState; binding?: BindingInfo | { error: string } | null;
+  data?: DataState; binding?: BindingInfo | { error: string } | null; diff?: DiffState;
 }
 type PkgData = { packages: PkgRef[]; objects: ObjState[] } | 'loading' | { error: string };
 type ExtId = 'preview' | 'abapgit' | 'cleaner' | 'rapgen' | 'docs' | 'outline';
-interface Settings { editorFont: number; autoComplete: boolean; restoreTabs: boolean; cleanerRules: RuleId[]; ext: Record<ExtId, boolean> }
+interface Settings { editorFont: number; autoComplete: boolean; restoreTabs: boolean; cleanerRules: RuleId[]; ext: Record<ExtId, boolean>; formatOnSave: boolean; cleanOnSave: boolean; keepDrafts: boolean }
+const APP_VERSION = '0.2.0';
 
 const EXTENSIONS: { id: ExtId; name: string; icon: string; desc: string; keys: string }[] = [
   { id: 'preview', name: 'Data Preview & SQL Console', icon: 'grid', desc: 'Browse the content of database tables and CDS views and run ABAP SQL, like F8 on a table in Eclipse.', keys: 'F8 on a table or CDS view · Ctrl+Enter runs the query' },
@@ -35,6 +40,16 @@ const EXTENSIONS: { id: ExtId; name: string; icon: string; desc: string; keys: s
   { id: 'rapgen', name: 'RAP Generator', icon: 'layers', desc: 'Generates a RAP business object with UI service from a database table: views, metadata extension, behavior definitions, service definition and binding.', keys: 'Right-click a database table' },
   { id: 'docs', name: 'ABAP Keyword Documentation & Element Info', icon: 'book', desc: 'Opens the SAP keyword documentation for the statement at the cursor and shows signatures and field details.', keys: 'F1 documentation · F2 element info' },
   { id: 'outline', name: 'Outline', icon: 'outline', desc: 'Structure of the open object: classes, sections, methods, attributes, events and CDS elements.', keys: 'Outline view in the left rail' },
+];
+
+/** What changes for someone used to Eclipse ADT. */
+const ECLIPSE_POINTS: [string, string][] = [
+  ['No workspace, no projects', 'Add a system and start. Switching systems is one click, and every system keeps its own open editors.'],
+  ['Never lose work', 'Unsaved changes survive a crash or restart, every save goes into local history, and Compare shows what changed against the active version.'],
+  ['Editing like VS Code', 'Command palette, Ctrl+D for the next match with several cursors, Alt+Up/Down to move lines, Ctrl+Shift+K to delete them.'],
+  ['Built in, not plugins', 'Data preview and SQL console, ABAP Cleaner (also on save), RAP generator, abapGit, keyword documentation. Turn each on or off.'],
+  ['Clear errors', 'When a system cannot be reached you see why and what to do, with diagnostics you can copy.'],
+  ['Small and portable', 'Uses the system web view instead of a Java runtime. The portable build runs from any folder without installing.'],
 ];
 
 const KIND_LABEL: Record<Connection['kind'], string> = { s4: 'On-premise', s4cloud: 'S/4HANA Cloud', btp: 'BTP ABAP', runner: 'Runner' };
@@ -58,6 +73,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   const settings: Settings = json<Settings>('nusa-adt-settings', {
     editorFont: 13, autoComplete: true, restoreTabs: true, cleanerRules: DEFAULT_RULES,
     ext: { preview: true, abapgit: true, cleaner: true, rapgen: true, docs: true, outline: true },
+    formatOnSave: false, cleanOnSave: false, keepDrafts: true,
   });
   const saveSettings = () => store.set('nusa-adt-settings', JSON.stringify(settings));
   const ext = (id: ExtId) => settings.ext[id] !== false;
@@ -213,11 +229,17 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   }
 
   // ------------------------------------------------------------------ toasts, modal, context menu
-  function toast(text: string, kind: 'info' | 'ok' | 'warn' | 'error' = 'info', ms = 3800) {
+  function toast(text: string, kind: 'info' | 'ok' | 'warn' | 'error' = 'info', ms = 3800, action?: { label: string; run: () => unknown }) {
     const el = document.createElement('div');
     el.className = `toast t-${kind}`;
     el.innerHTML = `${ic(kind === 'ok' ? 'ok' : kind === 'warn' ? 'warning' : kind === 'error' ? 'error' : 'info')}<span></span>`;
     (el.querySelector('span') as HTMLElement).textContent = text;
+    if (action) {
+      const b = document.createElement('button');
+      b.className = 'link toast-act'; b.textContent = action.label;
+      b.onclick = () => { el.remove(); Promise.resolve(action.run()).catch(e => fail(e)); };
+      el.appendChild(b);
+    }
     const box = $('#toasts');
     box.appendChild(el);
     while (box.children.length > 3) box.firstElementChild?.remove();
@@ -343,6 +365,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     return `<i class="glyph g-${type}">${TYPE_INFO[type].glyph}</i>`;
   }
   const tabGlyph = (t: Tab) => glyph(t.view === 'data' ? 'DATA' : t.ref.type);
+  const tabName = (t: Tab) => t.view === 'data' ? (t.data?.entity || 'SQL Console') : t.view === 'diff' ? `${t.ref.name} ↔ ${t.diff?.leftLabel || ''}` : t.ref.name;
 
   /** Why the run command is not available for the open object, or '' when it is. */
   function runBlocker(t: Tab | undefined): string {
@@ -627,6 +650,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
             ${c.id !== S.conn ? `<button class="btn small primary" data-act="switch" data-id="${esc(c.id)}">Connect</button>` : ''}
             <button class="btn small ghost" data-act="test-conn" data-id="${esc(c.id)}">Test</button>
             ${c.auth === 'sso' || c.auth === 'oauth' ? `<button class="btn small ghost" data-act="relogin" data-id="${esc(c.id)}">Log in again</button>` : ''}
+            ${c.builtin ? '' : `<button class="btn small ghost" data-act="diag" data-id="${esc(c.id)}">Log</button>`}
             ${c.builtin ? '' : `<button class="btn small ghost" data-act="edit-conn" data-id="${esc(c.id)}">Edit</button><button class="btn small ghost danger-text" data-act="del-conn" data-id="${esc(c.id)}">Remove</button>`}
           </div>
         </li>`;
@@ -646,6 +670,12 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
         <h3>Editor</h3>
         <label class="check"><input type="checkbox" id="setAuto" ${settings.autoComplete ? 'checked' : ''}><span>Show code completion while typing</span></label>
         <label class="check"><input type="checkbox" id="setRestore" ${settings.restoreTabs ? 'checked' : ''}><span>Reopen the editors of the last session</span></label>
+        <label class="check"><input type="checkbox" id="setDrafts" ${settings.keepDrafts ? 'checked' : ''}><span>Keep unsaved changes as drafts<small class="txt">Restored after a crash or restart</small></span></label>
+      </section>
+      <section class="set">
+        <h3>On save</h3>
+        <label class="check"><input type="checkbox" id="setFmtSave" ${settings.formatOnSave ? 'checked' : ''}><span>Format with the pretty printer</span></label>
+        ${ext('cleaner') ? `<label class="check"><input type="checkbox" id="setCleanSave" ${settings.cleanOnSave ? 'checked' : ''}><span>Clean up with ABAP Cleaner<small class="txt">Uses the rules below</small></span></label>` : ''}
       </section>
       ${ext('cleaner') ? `<section class="set">
         <h3>ABAP Cleaner rules <small>Ctrl+4</small></h3>
@@ -653,7 +683,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       </section>` : ''}
       <section class="set">
         <h3>About</h3>
-        <p class="note">Nusa ADT 0.2 · open-source ABAP workbench by ABAP Nusantara. Systems are stored in your user profile (or next to the portable exe); passwords and tickets in the operating system keychain.</p>
+        <p class="note">Nusa ADT ${APP_VERSION} · open-source ABAP workbench by ABAP Nusantara. Systems are stored in your user profile (or next to the portable exe); passwords and tickets in the operating system keychain.</p>
       </section>`;
     $<HTMLSelectElement>('#setFont').onchange = (e) => {
       settings.editorFont = +(e.target as HTMLSelectElement).value; saveSettings();
@@ -661,6 +691,10 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     };
     $<HTMLInputElement>('#setAuto').onchange = (e) => { settings.autoComplete = (e.target as HTMLInputElement).checked; saveSettings(); };
     $<HTMLInputElement>('#setRestore').onchange = (e) => { settings.restoreTabs = (e.target as HTMLInputElement).checked; saveSettings(); };
+    $<HTMLInputElement>('#setDrafts').onchange = (e) => { settings.keepDrafts = (e.target as HTMLInputElement).checked; saveSettings(); };
+    $<HTMLInputElement>('#setFmtSave').onchange = (e) => { settings.formatOnSave = (e.target as HTMLInputElement).checked; saveSettings(); };
+    const cs = document.getElementById('setCleanSave') as HTMLInputElement | null;
+    if (cs) cs.onchange = () => { settings.cleanOnSave = cs.checked; saveSettings(); };
     $('#sideBody').querySelectorAll<HTMLInputElement>('input[data-rule]').forEach(inp => {
       inp.onchange = () => {
         const id = inp.dataset.rule as RuleId;
@@ -687,7 +721,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     const t = cur();
     $('#tabs').innerHTML = tabsHere().map(x => `
       <div class="tab ${t && x.key === t.key ? 'on' : ''} ${x.ref.inactive && x.view === 'source' ? 'inactive' : ''}" role="tab" aria-selected="${!!t && x.key === t.key}" data-act="tab" data-key="${esc(x.key)}" data-ctx="tab" title="${esc(x.ref.name)}${x.ref.desc ? ' · ' + esc(x.ref.desc) : ''}">
-        ${tabGlyph(x)}<span class="tname">${esc(x.view === 'data' ? (x.data?.entity || 'SQL Console') : x.ref.name)}</span>
+        ${tabGlyph(x)}<span class="tname">${esc(tabName(x))}</span>
         ${x.lock ? `<span class="tlock" title="Locked by you">${ic('lock')}</span>` : ''}
         <button class="tclose ${isDirty(x) ? 'dirty' : ''}" data-act="close" data-key="${esc(x.key)}" title="${isDirty(x) ? 'Unsaved changes. Close' : 'Close'}" aria-label="Close ${esc(x.ref.name)}">${ic('close')}</button>
       </div>`).join('');
@@ -699,6 +733,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     const el = $('#crumbs');
     if (!t) { el.innerHTML = ''; return; }
     const c = conn();
+    if (t.view === 'diff') { el.innerHTML = `<span>${esc(c.sid)}</span>${ic('chev')}<span>${esc(t.ref.pkg)}</span>${ic('chev')}<b>${esc(t.ref.name)}</b>${t.ref.type === 'CLAS' && t.diff ? `${ic('chev')}<span>${esc(INCLUDE_LABEL[t.diff.inc])}</span>` : ''}${ic('chev')}<span>Compare</span>`; return; }
     if (t.view === 'data') { el.innerHTML = `<span>${esc(c.sid)}</span>${ic('chev')}<b>${t.data?.entity ? 'Data Preview' : 'SQL Console'}</b>${t.data?.entity ? `${ic('chev')}<span>${esc(t.data.entity)}</span>` : ''}`; return; }
     const st = t.view === 'binding' ? '' : t.ref.inactive ? '<span class="pill p-warn">Inactive</span>' : '<span class="pill p-ok">Active</span>';
     el.innerHTML = `<span>${esc(c.sid)}</span>${ic('chev')}<span>${esc(t.ref.pkg)}</span>${ic('chev')}<span>${esc(TYPE_INFO[t.ref.type].folder)}</span>${ic('chev')}<b>${esc(t.ref.name)}</b>
@@ -808,6 +843,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
           ${c.auth === 'sso' || c.auth === 'oauth' || c.auth === 'basic' ? `<button class="btn" data-act="relogin" data-id="${esc(c.id)}">Log in again</button>` : ''}
           ${c.builtin ? '' : `<button class="btn" data-act="edit-conn" data-id="${esc(c.id)}">Edit system</button>`}
         </div>
+        ${c.builtin ? '' : `<p class="wel-diag">Still stuck? <button class="link" data-act="diag-copy" data-id="${esc(c.id)}">Copy diagnostics</button> and paste them into an issue or a chat. Passwords and tickets are never included.</p>`}
         <div class="wel-alt">${demo ? `<button class="link" data-act="switch" data-id="${esc(demo.id)}">Open the DEMO system</button> · ` : ''}<button class="link" data-act="add-conn">Add another system</button></div></div>`;
       return;
     }
@@ -818,13 +854,44 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     ];
     $('#welcome').innerHTML = `<div class="wel">${LOGO}<h1>${esc(opts.brand || 'Nusa ADT')}</h1><p>Connected to <b>${esc(c.sid)}</b> · ${esc(sys.release)}</p>
       <div class="wel-actions"><button class="btn primary" data-act="palette-obj">${ic('search')}Open object</button><button class="btn" data-cmd="new">${ic('plus')}New object</button><button class="btn" data-cmd="new-package">${ic('pkgplus')}New package</button></div>
-      <dl class="keys">${keys.map(([a, k]) => `<dt>${a}</dt><dd><kbd>${k}</kbd></dd>`).join('')}</dl></div>`;
+      <dl class="keys">${keys.map(([a, k]) => `<dt>${a}</dt><dd><kbd>${k}</kbd></dd>`).join('')}</dl>
+      ${store.get('nusa-adt-eclipse-seen') ? '' : `<section class="eclipse-card">
+        <h2>Coming from Eclipse ADT?</h2>
+        <ul>${ECLIPSE_POINTS.slice(0, 4).map(([h, p]) => `<li><b>${esc(h)}</b><span>${esc(p)}</span></li>`).join('')}</ul>
+        <div class="eclipse-actions"><button class="btn small" data-act="eclipse">See all differences</button><button class="btn small ghost" data-act="eclipse-hide">Got it</button></div>
+      </section>`}</div>`;
   }
 
   function renderPane() {
     const t = cur();
     if (!t) return;
     const pane = $('#pane');
+    if (t.view === 'diff') {
+      const df = t.diff as DiffState;
+      const ops = diffLines(df.left.split('\n'), df.right.split('\n'));
+      const st = diffStats(ops);
+      const groups = df.all ? [{ ops, aStart: 0, bStart: 0 }] : hunks(ops, 3);
+      const row = (o: typeof ops[number]) => `<tr class="d-${o.t}"><td class="ln">${o.a !== undefined ? o.a + 1 : ''}</td><td class="ln">${o.b !== undefined ? o.b + 1 : ''}</td><td class="sg">${o.t === 'add' ? '+' : o.t === 'del' ? '−' : ''}</td><td class="tx">${esc(o.text) || ' '}</td></tr>`;
+      let prevEnd = 0;
+      const body = groups.map(g => {
+        const first = ops.indexOf(g.ops[0]);
+        const gap = first - prevEnd;
+        prevEnd = first + g.ops.length;
+        return (gap > 0 ? `<tr class="d-gap"><td colspan="4">⋯ ${gap} unchanged line${gap === 1 ? '' : 's'}</td></tr>` : '') + g.ops.map(row).join('');
+      }).join('') + (!df.all && ops.length - prevEnd > 0 && groups.length ? `<tr class="d-gap"><td colspan="4">⋯ ${ops.length - prevEnd} unchanged line${ops.length - prevEnd === 1 ? '' : 's'}</td></tr>` : '');
+      pane.innerHTML = `<div class="df">
+        <header class="df-bar">
+          <span class="df-side"><i class="d-del-dot"></i>${esc(df.leftLabel)}</span><span class="df-arrow">→</span><span class="df-side"><i class="d-add-dot"></i>${esc(df.rightLabel)}</span>
+          <span class="df-stats">${st.added || st.removed ? `<b class="s-ok">+${st.added}</b> <b class="s-error">−${st.removed}</b>` : 'No differences'}</span>
+          <span class="grow"></span>
+          <label class="check small"><input type="checkbox" data-act="df-all" ${df.all ? 'checked' : ''}><span>Whole file</span></label>
+          ${st.added || st.removed ? `<button class="btn small" data-act="df-restore">${ic('download')}Use ${esc(df.leftLabel.toLowerCase())}</button>` : ''}
+          <button class="btn small ghost" data-act="df-edit">Back to editor</button>
+        </header>
+        ${st.added || st.removed ? `<div class="df-body"><table>${body}</table></div>` : `<div class="empty-panel">The editor matches the ${esc(df.leftLabel.toLowerCase())}.</div>`}
+      </div>`;
+      return;
+    }
     if (t.view === 'data') {
       const d = t.data as DataState;
       const r = d.result;
@@ -887,8 +954,9 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
 
   // ------------------------------------------------------------------ session (open editors per system)
   const saveSession = debounce(() => {
-    const list = tabsHere().map(t => ({ uri: t.ref.uri, name: t.ref.name, type: t.ref.type, pkg: t.ref.pkg, desc: t.ref.desc, include: t.include, view: t.view, entity: t.data?.entity, sql: t.data?.sql }));
-    store.set('nusa-adt-session-' + S.conn, JSON.stringify({ tabs: list, active: cur()?.key || null }));
+    const list = tabsHere().filter(t => t.view !== 'diff').map(t => ({ uri: t.ref.uri, name: t.ref.name, type: t.ref.type, pkg: t.ref.pkg, desc: t.ref.desc, include: t.include, view: t.view, entity: t.data?.entity, sql: t.data?.sql }));
+    const act = cur();
+    store.set('nusa-adt-session-' + S.conn, JSON.stringify({ tabs: list, active: act && act.view !== 'diff' ? act.key : null }));
   }, 400);
   async function restoreSession(): Promise<boolean> {
     if (!settings.restoreTabs || tabsHere().length) return false;
@@ -911,15 +979,110 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
 
   // ------------------------------------------------------------------ editor binding
   let swapping = false;
+  // ------------------------------------------------------------------ local history and drafts
+  // Every save keeps a snapshot (like Eclipse's local history, but one click away), and unsaved
+  // changes are written to a draft so a crash or a closed laptop never loses work.
+  const histKey = (t: Tab, inc: Include) => `nusa-adt-hist|${t.conn}|${t.ref.uri}|${inc}`;
+  const draftKey = (t: Tab, inc: Include) => `nusa-adt-draft|${t.conn}|${t.ref.uri}|${inc}`;
+  const history = (t: Tab, inc: Include): Snapshot[] => { try { return JSON.parse(store.get(histKey(t, inc)) || '[]'); } catch { return []; } };
+  const remember = (t: Tab, inc: Include, text: string, note: string) => {
+    const list = addSnapshot(history(t, inc), { at: Date.now(), text, note });
+    store.set(histKey(t, inc), JSON.stringify(list));
+  };
+  const dropDraft = (t: Tab, inc: Include) => { try { localStorage.removeItem(draftKey(t, inc)); } catch { /* ignore */ } };
+  const base = new Map<string, string>();       // server text each doc was loaded from
+  const writeDrafts = debounce(() => {
+    if (!settings.keepDrafts) return;
+    for (const t of S.tabs) {
+      if (t.view !== 'source') continue;
+      for (const inc of backend.includesOf(t.ref.type)) {
+        const d = docs.get(docKey(t, inc));
+        if (!d) continue;
+        if (d.isClean()) dropDraft(t, inc);
+        else store.set(draftKey(t, inc), JSON.stringify({ at: Date.now(), base: base.get(docKey(t, inc)) ?? '', text: d.getValue() }));
+      }
+    }
+  }, 800);
+  const ago = (ms: number) => {
+    const m = Math.round((Date.now() - ms) / 60000);
+    return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : new Date(ms).toLocaleString();
+  };
+
   async function ensureDoc(t: Tab, inc: Include): Promise<CM> {
     const k = docKey(t, inc);
     let d = docs.get(k);
     if (!d) {
       const text = await backend.read(t.conn, t.ref, inc, 'inactive');
-      d = docs.get(k) || newDoc(text, isCdsLike(t.ref.type) ? 'cds' : 'abap');
+      if (docs.get(k)) return docs.get(k);
+      d = newDoc(text, isCdsLike(t.ref.type) ? 'cds' : 'abap');
       docs.set(k, d);
+      base.set(k, text);
+      let draft: { at: number; base: string; text: string } | null = null;
+      try { draft = JSON.parse(store.get(draftKey(t, inc)) || 'null'); } catch { draft = null; }
+      if (draft && settings.keepDrafts && draft.text !== text) {
+        if (draft.base === text) {
+          d.setValue(draft.text);                     // Ctrl+Z goes back to the system version
+          const doc = d;
+          toast(`Restored your unsaved changes to ${t.ref.name} from ${ago(draft.at)}.`, 'info', 9000,
+            { label: 'Show changes', run: () => openDiff(t, inc, text, 'System version', doc.getValue(), 'Editor') });
+        } else {
+          remember(t, inc, draft.text, 'Unsaved draft');
+          dropDraft(t, inc);
+          toast(`${t.ref.name} changed on the system since your unsaved draft from ${ago(draft.at)}. The draft is kept in Local History.`, 'warn', 10000,
+            { label: 'Compare', run: () => compareHistory(t) });
+        }
+      } else if (draft) dropDraft(t, inc);
     }
     return d;
+  }
+
+  // ------------------------------------------------------------------ compare
+  function openDiff(src: Tab, inc: Include, left: string, leftLabel: string, right: string, rightLabel: string) {
+    const key = `${src.key}|diff`;
+    let t = S.tabs.find(x => x.key === key);
+    if (!t) { t = { key, conn: src.conn, ref: src.ref, include: inc, view: 'diff' }; S.tabs.push(t); }
+    t.diff = { left, right, leftLabel, rightLabel, srcKey: src.key, inc };
+    t.ref = src.ref;
+    showTab(t);
+  }
+
+  async function compareActive(t = curSrc()) {
+    if (!t) { toast('Open a source first'); return; }
+    const inc = t.include;
+    await busy('Reading the active version', async () => {
+      const active = await backend.read(t.conn, t.ref, inc, 'active');
+      const d = await ensureDoc(t, inc);
+      openDiff(t, inc, active, 'Active version', d.getValue(), 'Editor');
+    });
+  }
+
+  async function compareHistory(t = curSrc()) {
+    if (!t) { toast('Open a source first'); return; }
+    const inc = t.include;
+    const list = history(t, inc);
+    if (!list.length) { toast(`No local history for ${t.ref.name} yet. Every save adds a version.`); return; }
+    const pick = await modal<string>(`Local history · ${t.ref.name}`, `<p class="note">Versions saved from this computer, newest first. Choose one to compare with the editor.</p>
+      <ul class="pick hist">${list.map((h, i) => { const n = h.text.split('\n').length; return `<li><button type="button" data-hist="${i}"><b>${esc(new Date(h.at).toLocaleString())}</b><span>${esc(h.note)} · ${n} lines · ${esc(ago(h.at))}</span></button></li>`; }).join('')}</ul>`,
+      [{ label: 'Cancel', value: null }], (root, close) => {
+        root.querySelectorAll<HTMLButtonElement>('[data-hist]').forEach(b => { b.onclick = () => close(b.dataset.hist); });
+      });
+    if (pick === null || pick === undefined) return;
+    const h = list[+pick];
+    const d = await ensureDoc(t, inc);
+    openDiff(t, inc, h.text, `Local ${new Date(h.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`, d.getValue(), 'Editor');
+  }
+
+  async function restoreLeft(t: Tab) {
+    const df = t.diff; if (!df) return;
+    const src = S.tabs.find(x => x.key === df.srcKey);
+    if (!src) { toast('The editor of this object is closed. Open it first.', 'warn'); return; }
+    const d = await ensureDoc(src, df.inc);
+    if (d.getValue() === df.left) { toast('The editor already has this version'); return; }
+    d.setValue(df.left);
+    writeDrafts();
+    await closeTab(t.key, false);
+    await showTab(src, df.inc);
+    toast(`Replaced the editor content with the ${df.leftLabel.toLowerCase()}. Save to keep it, or Ctrl+Z to undo.`, 'ok', 6000);
   }
 
   function addTab(ref: ObjState, inc: Include = 'main'): Tab {
@@ -981,9 +1144,10 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
         [{ label: 'Cancel', value: 'cancel' }, { label: "Don't save", value: 'discard' }, { label: 'Save', value: 'save', kind: 'primary' }]);
       if (!r || r === 'cancel') return false;
       if (r === 'save' && !(await save(t))) return false;
+      if (r === 'discard') for (const inc of backend.includesOf(t.ref.type)) dropDraft(t, inc);
     }
     if (t.lock && t.lock !== 'pending') { try { await backend.unlock(t.conn, t.ref, t.lock); } catch { /* lock expires on the server */ } }
-    for (const inc of backend.includesOf(t.ref.type)) docs.delete(docKey(t, inc));
+    if (t.view === 'source') for (const inc of backend.includesOf(t.ref.type)) docs.delete(docKey(t, inc));
     const list = tabsHere();
     const idx = list.findIndex(x => x.key === key);
     S.tabs = S.tabs.filter(x => x.key !== key);
@@ -1004,6 +1168,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     const t = curSrc();
     if (!t) return;
     renderDirty();
+    writeDrafts();
     if (!t.lock && !(S.debug && !S.debug.done)) {
       t.lock = 'pending';
       try { t.lock = await backend.lock(t.conn, t.ref); renderTabs(); renderStatus(); }
@@ -1105,6 +1270,18 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     if (S.debug && !S.debug.done) { toast('Stop the debugger before saving', 'warn'); return false; }
     const incs = backend.includesOf(t.ref.type).filter(inc => incDirty(t, inc));
     if (!incs.length) { toast(`${t.ref.name} has no unsaved changes`); return true; }
+    if (TYPE_INFO[t.ref.type].editor === 'abap' && (settings.cleanOnSave || settings.formatOnSave)) {
+      for (const inc of incs) {
+        const d = docs.get(docKey(t, inc));
+        let text: string = d.getValue();
+        if (settings.cleanOnSave && ext('cleaner')) text = cleanAbap(text, settings.cleanerRules).text;
+        if (settings.formatOnSave) text = await backend.prettyPrint(t.conn, text).catch(() => text);
+        if (text !== d.getValue()) {
+          if (d === cm.getDoc()) replaceAll(text);
+          else d.setValue(text);
+        }
+      }
+    }
     const r = await busy(`Saving ${t.ref.name}`, async () => {
       if (!t.lock || t.lock === 'pending') t.lock = await backend.lock(t.conn, t.ref);
       const need = await backend.transportNeed(t.conn, t.ref);
@@ -1112,8 +1289,12 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       if (need.needed) { tr = (await chooseTransport(t.ref, need)) ?? undefined; if (!tr) return false; }
       for (const inc of incs) {
         const d = docs.get(docKey(t, inc));
-        await backend.write(t.conn, t.ref, inc, d.getValue(), t.lock as string, tr);
+        const text = d.getValue();
+        await backend.write(t.conn, t.ref, inc, text, t.lock as string, tr);
         d.markClean();
+        base.set(docKey(t, inc), text);
+        remember(t, inc, text, tr ? `Saved · ${tr}` : 'Saved');
+        dropDraft(t, inc);
       }
       t.ref = await backend.state(t.conn, t.ref);
       await updateObjInCache(t.ref);
@@ -1652,6 +1833,41 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   }
 
   // ------------------------------------------------------------------ systems
+  // ------------------------------------------------------------------ diagnostics
+  function diagText(id: string): string {
+    const c = S.conns.find(x => x.id === id) || conn();
+    const sys = S.sys[id];
+    const hosts = c.kind === 'runner' ? null : systemHosts(c.url);
+    return diagReport({
+      'Nusa ADT': APP_VERSION,
+      Platform: navigator.userAgent,
+      System: `${c.sid} (${KIND_LABEL[c.kind]})`,
+      Logon: AUTH_LABEL[c.auth],
+      'URL entered': c.url,
+      'ADT host': hosts?.api,
+      'Logon page host': c.auth === 'sso' ? hosts?.ui : undefined,
+      Client: c.kind === 's4' ? c.client : undefined,
+      Language: c.language,
+      Status: !sys ? 'connecting' : 'error' in sys ? `error: ${sys.error}` : `connected · ${sys.release}`,
+      Time: new Date().toISOString(),
+    }, id);
+  }
+  async function showDiag(id: string) {
+    const text = diagText(id);
+    const r = await modal<string>('Connection log', `<p class="note">Requests to this system since the app started. Passwords, tickets and tokens are never recorded.</p><pre class="diag">${esc(text)}</pre>`,
+      [{ label: 'Close', value: null }, { label: 'Copy', value: 'copy', kind: 'primary' }], undefined, true);
+    if (r === 'copy') await copy(text, 'Copied the diagnostics');
+  }
+  async function eclipseGuide() {
+    store.set('nusa-adt-eclipse-seen', '1');
+    await modal('Coming from Eclipse ADT', `<p class="note">Nusa ADT talks to the same ADT services as Eclipse, so nothing changes on the SAP side, and the Eclipse shortcuts you know still work.</p>
+      <ul class="eclipse-list">${ECLIPSE_POINTS.map(([h, p]) => `<li><b>${esc(h)}</b><span>${esc(p)}</span></li>`).join('')}</ul>
+      <div class="eclipse-keys"><div><h4>Same keys as Eclipse</h4><dl class="keys">${[['Open object', 'Ctrl+Shift+A'], ['Activate', 'Ctrl+F3'], ['Check', 'Ctrl+F2'], ['Pretty printer', 'Shift+F1'], ['Definition · Element info', 'F3 · F2'], ['Where-used', 'Ctrl+Shift+G'], ['Run', 'F8 / F9'], ['ABAP Unit · ATC', 'Ctrl+Shift+F10 · Ctrl+Shift+F2']].map(([a, k]) => `<dt>${a}</dt><dd><kbd>${k}</kbd></dd>`).join('')}</dl></div>
+      <div><h4>New here</h4><dl class="keys">${[['Command palette', 'Ctrl+Shift+P'], ['Next match (multi-cursor)', 'Ctrl+D'], ['Move · copy line', 'Alt+↑↓ · Shift+Alt+↓'], ['Delete line', 'Ctrl+Shift+K'], ['Clean up', 'Ctrl+4'], ['Keyword docs', 'F1']].map(([a, k]) => `<dt>${a}</dt><dd><kbd>${k}</kbd></dd>`).join('')}</dl></div></div>`,
+      [{ label: 'Close', value: null, kind: 'primary' }], (root) => { setTimeout(() => { const m = root.closest('.modal'); if (m) m.scrollTop = 0; }, 0); }, true);
+    renderWelcome();
+  }
+
   async function systemForm(existing?: Connection): Promise<void> {
     const e = existing;
     const kind0 = e?.kind || 's4';
@@ -1681,8 +1897,8 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
         const authEl = $<HTMLSelectElement>('#sfAuth', root);
         const HINT: Record<Connection['kind'], string> = {
           s4: 'For example https://vhcals4hci.dummy.nodomain:44300. The HTTPS port is in transaction SMICM → Services.',
-          s4cloud: 'The URL you use for the ABAP Cloud Project in Eclipse, usually https://my123456-api.s4hana.cloud.sap.',
-          btp: 'The URL of the ABAP environment instance, for example https://1a2b3c4d.abap.eu10.hana.ondemand.com.',
+          s4cloud: 'The address you open in the browser, such as https://my123456.s4hana.cloud.sap, or its API URL https://my123456-api.s4hana.cloud.sap. Links with /ui#Shell-home work too.',
+          btp: 'The URL of the ABAP environment instance, for example https://1a2b3c4d.abap.eu10.hana.ondemand.com (the abap-web launchpad address works too).',
           runner: 'For example http://localhost:7777.',
         };
         const AUTHS: Record<Connection['kind'], [Connection['auth'], string][]> = {
@@ -1699,7 +1915,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
           root.querySelectorAll<HTMLElement>('[data-a]').forEach(el => { el.hidden = !(el.dataset.a as string).split(' ').includes(a) || k === 'runner'; });
           $('#sfUrlHint', root).textContent = HINT[k];
           $('#sfUserLabel', root).textContent = a === 'sso' ? 'User ID (optional, shows your transport requests)' : 'User';
-          $<HTMLInputElement>('#sfUrl', root).placeholder = k === 's4cloud' ? 'https://my123456-api.s4hana.cloud.sap' : k === 'btp' ? 'https://<id>.abap.<region>.hana.ondemand.com' : k === 'runner' ? 'http://localhost:7777' : 'https://host:44300';
+          $<HTMLInputElement>('#sfUrl', root).placeholder = k === 's4cloud' ? 'https://my123456.s4hana.cloud.sap' : k === 'btp' ? 'https://<id>.abap.<region>.hana.ondemand.com' : k === 'runner' ? 'http://localhost:7777' : 'https://host:44300';
           $('#sfNote', root).textContent = a === 'sso' ? 'Your browser opens for the logon, the same way Eclipse does it. Nusa ADT receives a logon ticket on http://localhost and keeps it for this session. Your user needs the developer role (SAP_BR_DEVELOPER on SAP cloud systems).'
             : a === 'oauth' ? 'Create the service key in the SAP BTP cockpit on your ABAP environment instance. It is stored in the operating system keychain.'
               : a === 'basic' ? 'The password is stored in the operating system keychain, never in a file.' : '';
@@ -1710,7 +1926,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
           ev.preventDefault();
           const k = kindEl.value as Connection['kind'];
           const a = authEl.value as Connection['auth'];
-          const url = $<HTMLInputElement>('#sfUrl', root).value.trim().replace(/\/+$/, '');
+          const url = systemUrl(k, $<HTMLInputElement>('#sfUrl', root).value);
           let sid = $<HTMLInputElement>('#sfSid', root).value.trim().toUpperCase();
           const client = $<HTMLInputElement>('#sfClient', root).value.trim();
           const user = $<HTMLInputElement>('#sfUser', root).value.trim().toUpperCase();
@@ -1785,7 +2001,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
 
   async function connectCurrent() {
     const id = S.conn;
-    try { S.sys[id] = await backend.connect(id); } catch (e) { S.sys[id] = { error: msg(e) }; }
+    try { S.sys[id] = await backend.connect(id); } catch (e) { S.sys[id] = { error: msg(e) }; logDiag(id, `connect failed: ${msg(e)}`); }
     if (id !== S.conn) return;
     S.git = null;
     if (sysOk()) {
@@ -1813,6 +2029,11 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     if (t && t.view === 'source') await showTab(t); else { swapping = true; cm.swapDoc(placeholderDoc); swapping = false; renderAll(); }
     await connectCurrent();
     if (sysOk()) toast(`Connected to ${conn().sid}`, 'ok', 2000);
+  }
+  function eclipseTip() {
+    if (store.get('nusa-adt-eclipse-seen') || store.get('nusa-adt-eclipse-tip')) return;
+    store.set('nusa-adt-eclipse-tip', '1');
+    toast('Used to Eclipse ADT? Your shortcuts work here, plus a few new ones.', 'info', 12000, { label: 'What is different', run: eclipseGuide });
   }
 
   async function releaseTr(id: string) {
@@ -1903,6 +2124,15 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     { id: 'info', title: 'Show Element Info', key: 'F2', run: elementInfo, when: () => ext('docs') },
     { id: 'docs', title: 'ABAP Keyword Documentation', key: 'F1', run: keywordDocs, when: () => ext('docs') },
     { id: 'where', title: 'Where-Used List', key: 'Ctrl+Shift+G', run: whereUsed },
+    { id: 'compare-active', title: 'Compare With: Active Version', run: () => compareActive() },
+    { id: 'compare-history', title: 'Compare With: Local History…', run: () => compareHistory() },
+    { id: 'next-match', title: 'Add Selection to Next Match', key: 'Ctrl+D', run: () => { if (curSrc()) { selectNextOccurrence(cm); cm.focus(); } } },
+    { id: 'line-up', title: 'Move Line Up', key: 'Alt+Up', run: () => { if (curSrc()) moveLines(cm, -1); } },
+    { id: 'line-down', title: 'Move Line Down', key: 'Alt+Down', run: () => { if (curSrc()) moveLines(cm, 1); } },
+    { id: 'line-copy', title: 'Copy Line Down', key: 'Shift+Alt+Down', run: () => { if (curSrc()) duplicateLines(cm, 1); } },
+    { id: 'line-delete', title: 'Delete Line', key: 'Ctrl+Shift+K', run: () => { if (curSrc()) deleteLines(cm); } },
+    { id: 'diag', title: 'Show Connection Log (Diagnostics)', run: () => showDiag(S.conn) },
+    { id: 'eclipse', title: 'Help: Coming from Eclipse ADT', run: () => eclipseGuide() },
     { id: 'rapgen', title: 'Generate RAP Service from Table…', run: () => rapGenerator(), when: () => ext('rapgen') },
     { id: 'git', title: 'abapGit: Show Repositories', run: () => { S.view = 'git'; S.sideOpen = true; renderAll(); }, when: () => ext('abapgit') },
     { id: 'git-link', title: 'abapGit: Link Package to Repository…', run: () => gitLink(), when: () => ext('abapgit') },
@@ -2074,6 +2304,9 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       ...(ext('docs') ? [{ label: 'Element Info', key: 'F2', run: elementInfo }, { label: 'Keyword Documentation', key: 'F1', run: keywordDocs }] : []),
       { label: 'Where-Used List', key: 'Ctrl+Shift+G', run: whereUsed },
       { sep: true },
+      { label: 'Compare With Active Version', run: () => compareActive() },
+      { label: 'Compare With Local History…', run: () => compareHistory() },
+      { sep: true },
       ...(abap ? [{ label: 'Format', key: 'Shift+F1', run: format }] : []),
       ...(abap && ext('cleaner') ? [{ label: 'Clean Up', key: 'Ctrl+4', run: cleanUp }] : []),
       { label: 'Toggle Comment', key: 'Ctrl+/', run: toggleComment },
@@ -2152,6 +2385,13 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       case 'set-theme': setTheme(d.id as ThemePref); break;
       case 'palette-obj': openPalette('obj'); break;
       case 'switch': await switchConn(d.id as string); break;
+      case 'diag': await showDiag(d.id as string); break;
+      case 'diag-copy': await copy(diagText(d.id as string), 'Copied the diagnostics. Passwords and tickets are not included.'); break;
+      case 'eclipse': await eclipseGuide(); break;
+      case 'eclipse-hide': store.set('nusa-adt-eclipse-seen', '1'); renderWelcome(); break;
+      case 'df-all': { const t = cur(); if (t?.diff) { t.diff.all = (el as HTMLInputElement).checked; renderPane(); } break; }
+      case 'df-restore': { const t = cur(); if (t) await restoreLeft(t); break; }
+      case 'df-edit': { const t = cur(); const src = t?.diff && S.tabs.find(x => x.key === t.diff!.srcKey); if (src) await showTab(src, t!.diff!.inc); break; }
       case 'add-conn': await systemForm(); break;
       case 'edit-conn': { const c = S.conns.find(x => x.id === d.id); if (c) await systemForm(c); break; }
       case 'test-conn': await testConn(d.id as string); break;
@@ -2229,4 +2469,5 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   if (!S.conn) { renderAll(); return; }
   renderAll();
   await connectCurrent();
+  setTimeout(eclipseTip, 1500);
 }

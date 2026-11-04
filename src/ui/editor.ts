@@ -70,8 +70,119 @@ export function createEditor(host: HTMLElement): CM {
     extraKeys: {
       Tab: (cm: CM) => cm.somethingSelected() ? cm.indentSelection('add') : cm.replaceSelection('  '),
       'Shift-Tab': (cm: CM) => cm.indentSelection('subtract'),
+      'Ctrl-D': selectNextOccurrence, 'Cmd-D': selectNextOccurrence,
+      'Alt-Up': (cm: CM) => moveLines(cm, -1), 'Alt-Down': (cm: CM) => moveLines(cm, 1),
+      'Shift-Alt-Up': (cm: CM) => duplicateLines(cm, -1), 'Shift-Alt-Down': (cm: CM) => duplicateLines(cm, 1),
+      'Ctrl-Shift-K': deleteLines, 'Cmd-Shift-K': deleteLines,
+      'Ctrl-Enter': (cm: CM) => insertLine(cm, 1), 'Ctrl-Shift-Enter': (cm: CM) => insertLine(cm, -1),
+      Esc: (cm: CM) => { const s = cm.listSelections(); if (s.length > 1) cm.setSelection(s[s.length - 1].anchor, s[s.length - 1].head); else return CodeMirror.Pass; },
     },
   });
+}
+
+// ---- VS Code editing commands (Eclipse has no multi-cursor, line move only with Alt+Up/Down)
+
+type Pos = { line: number; ch: number };
+const cmp = (a: Pos, b: Pos) => a.line - b.line || a.ch - b.ch;
+
+/** Ctrl+D: select the word at the cursor, then add its next occurrence as another selection. */
+export function selectNextOccurrence(cm: CM) {
+  const sels: { anchor: Pos; head: Pos }[] = cm.listSelections();
+  const last = sels[sels.length - 1];
+  const from = cmp(last.anchor, last.head) <= 0 ? last.anchor : last.head;
+  const to = cmp(last.anchor, last.head) <= 0 ? last.head : last.anchor;
+  if (!cmp(from, to)) {
+    const line: string = cm.getLine(from.line);
+    let a = from.ch, b = from.ch;
+    while (a > 0 && /[\w\/$%-]/.test(line[a - 1])) a--;
+    while (b < line.length && /[\w\/$%-]/.test(line[b])) b++;
+    if (a === b) return;
+    cm.setSelections([...sels.slice(0, -1), { anchor: { line: from.line, ch: a }, head: { line: from.line, ch: b } }]);
+    return;
+  }
+  const word: string = cm.getRange(from, to);
+  const text: string = cm.getValue();
+  const lower = text.toLowerCase(), w = word.toLowerCase();
+  let idx = lower.indexOf(w, cm.indexFromPos(to));
+  if (idx < 0) idx = lower.indexOf(w);
+  const taken = new Set(sels.map(s => cm.indexFromPos(cmp(s.anchor, s.head) <= 0 ? s.anchor : s.head)));
+  if (idx < 0 || taken.has(idx)) return;
+  const anchor = cm.posFromIndex(idx), head = cm.posFromIndex(idx + word.length);
+  cm.addSelection(anchor, head);
+  cm.scrollIntoView(head, 80);
+}
+
+function lineSpans(cm: CM): [number, number][] {
+  const spans: [number, number][] = [];
+  for (const s of cm.listSelections() as { anchor: Pos; head: Pos }[]) {
+    const a = Math.min(s.anchor.line, s.head.line);
+    let b = Math.max(s.anchor.line, s.head.line);
+    const end = cmp(s.anchor, s.head) <= 0 ? s.head : s.anchor;
+    if (b > a && end.ch === 0) b--;
+    const last = spans[spans.length - 1];
+    if (last && a <= last[1] + 1) last[1] = Math.max(last[1], b); else spans.push([a, b]);
+  }
+  return spans;
+}
+
+/** Alt+Up / Alt+Down: move the selected lines. */
+export function moveLines(cm: CM, dir: -1 | 1) {
+  const spans = lineSpans(cm);
+  if (dir < 0 && spans[0][0] === 0) return;
+  if (dir > 0 && spans[spans.length - 1][1] >= cm.lastLine()) return;
+  const sels = cm.listSelections() as { anchor: Pos; head: Pos }[];
+  cm.operation(() => {
+    for (const [a, b] of dir < 0 ? spans : [...spans].reverse()) {
+      if (dir < 0) {
+        const above = cm.getLine(a - 1);
+        cm.replaceRange('', { line: a - 1, ch: 0 }, { line: a, ch: 0 });
+        cm.replaceRange(above + '\n', { line: b, ch: 0 });
+      } else {
+        const below = cm.getLine(b + 1);
+        cm.replaceRange('', { line: b, ch: cm.getLine(b).length }, { line: b + 1, ch: below.length });
+        cm.replaceRange(below + '\n', { line: a, ch: 0 });
+      }
+    }
+    cm.setSelections(sels.map(s => ({ anchor: { line: s.anchor.line + dir, ch: s.anchor.ch }, head: { line: s.head.line + dir, ch: s.head.ch } })));
+  });
+}
+
+/** Shift+Alt+Up / Down: copy the selected lines above or below. */
+export function duplicateLines(cm: CM, dir: -1 | 1) {
+  const spans = lineSpans(cm);
+  const sels = cm.listSelections() as { anchor: Pos; head: Pos }[];
+  cm.operation(() => {
+    let shift = 0;
+    const moved = sels.map(s => ({ anchor: { ...s.anchor }, head: { ...s.head } }));
+    for (const [a, b] of spans) {
+      const text = cm.getRange({ line: a + shift, ch: 0 }, { line: b + shift, ch: cm.getLine(b + shift).length });
+      cm.replaceRange(text + '\n', { line: a + shift, ch: 0 });
+      const n = b - a + 1;
+      if (dir > 0) moved.forEach(s => { if (s.head.line >= a && s.head.line <= b) { s.anchor.line += n + shift; s.head.line += n + shift; } });
+      shift += n;
+    }
+    if (dir > 0) cm.setSelections(moved);
+  });
+}
+
+/** Ctrl+Shift+K: delete the selected lines. */
+export function deleteLines(cm: CM) {
+  const spans = lineSpans(cm);
+  cm.operation(() => {
+    for (const [a, b] of [...spans].reverse()) {
+      if (b < cm.lastLine()) cm.replaceRange('', { line: a, ch: 0 }, { line: b + 1, ch: 0 });
+      else if (a > 0) cm.replaceRange('', { line: a - 1, ch: cm.getLine(a - 1).length }, { line: b, ch: cm.getLine(b).length });
+      else cm.replaceRange('', { line: 0, ch: 0 }, { line: b, ch: cm.getLine(b).length });
+    }
+  });
+}
+
+/** Ctrl+Enter / Ctrl+Shift+Enter: new line below or above, keeping the indentation. */
+export function insertLine(cm: CM, dir: -1 | 1) {
+  const c = cm.getCursor();
+  const indent = (cm.getLine(c.line).match(/^\s*/) as RegExpMatchArray)[0];
+  if (dir > 0) { cm.replaceRange('\n' + indent, { line: c.line, ch: cm.getLine(c.line).length }); cm.setCursor({ line: c.line + 1, ch: indent.length }); }
+  else { cm.replaceRange(indent + '\n', { line: c.line, ch: 0 }); cm.setCursor({ line: c.line, ch: indent.length }); }
 }
 
 export function newDoc(text: string, mode: 'abap' | 'cds' | 'text') {

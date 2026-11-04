@@ -105,12 +105,14 @@ pub async fn login(app: &tauri::AppHandle, key: &str) -> Result<Token, String> {
     .await
 }
 
-/// Browser logon used by Eclipse ADT for SAP S/4HANA Cloud Public Edition, SAP BTP ABAP
-/// (system URL) and on-premise systems with SAML: the system redirects to localhost with a
-/// `reentrance-ticket`, which is then sent as the MYSAPSSO2 cookie.
+/// Browser logon for SAP S/4HANA Cloud Public Edition, SAP BTP ABAP (system URL) and
+/// on-premise systems with SAML. The browser opens the reentrance service on the *UI* host
+/// (`my123456.s4hana.cloud.sap`, `<id>.abap-web.<region>...`), the user logs on at the
+/// identity provider, and the system redirects to localhost with a `reentrance-ticket`.
+/// The caller exchanges that ticket for a security session on the *API* host.
 pub async fn reentrance_ticket(
     app: &tauri::AppHandle,
-    base: &str,
+    ui_base: &str,
     client: Option<&str>,
     language: Option<&str>,
 ) -> Result<String, String> {
@@ -121,8 +123,8 @@ pub async fn reentrance_ticket(
     // SAP expects "localhost" here; 127.0.0.1 is rejected by some systems.
     let redirect = format!("http://localhost:{port}/adt/redirect");
     let mut url = format!(
-        "{}/sap/bc/adt/core/http/reentranceticket?redirect-url={}",
-        base.trim_end_matches('/'),
+        "{}/sap/bc/sec/reentrance?scenario=FTO1&redirect-url={}",
+        ui_base.trim_end_matches('/'),
         urlencode(&redirect)
     );
     if let Some(c) = client.filter(|c| !c.is_empty()) {
@@ -214,4 +216,65 @@ fn urlencode(s: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+/// API and UI origins of a system from whatever the user typed: a Fiori launchpad link
+/// (`https://my123456.s4hana.cloud.sap/ui#Shell-home`), the API URL, or a BTP host.
+/// S/4HANA Cloud serves ADT on `<tenant>-api.<domain>` and logon pages on `<tenant>.<domain>`;
+/// BTP ABAP serves ADT on `<id>.abap.<region>` and logon pages on `<id>.abap-web.<region>`.
+pub fn system_hosts(raw: &str) -> (String, String) {
+    let trimmed = raw.trim().trim_end_matches('/').to_string();
+    let Ok(u) = reqwest::Url::parse(raw.trim()) else {
+        return (trimmed.clone(), trimmed);
+    };
+    let host = u.host_str().unwrap_or("").to_lowercase();
+    let port = u.port().map(|p| format!(":{p}")).unwrap_or_default();
+    let (first, rest) = host.split_once('.').unwrap_or((host.as_str(), ""));
+    let (api, ui) = if rest.starts_with("s4hana.") {
+        let tenant = first.trim_end_matches("-api");
+        (format!("{tenant}-api.{rest}"), format!("{tenant}.{rest}"))
+    } else if host.contains(".abap-web.") {
+        (host.replacen(".abap-web.", ".abap.", 1), host.clone())
+    } else if host.contains(".abap.") {
+        (host.clone(), host.replacen(".abap.", ".abap-web.", 1))
+    } else {
+        (host.clone(), host.clone())
+    };
+    let scheme = u.scheme();
+    (
+        format!("{scheme}://{api}{port}"),
+        format!("{scheme}://{ui}{port}"),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::system_hosts;
+
+    #[test]
+    fn hosts_from_launchpad_and_api_urls() {
+        let want = (
+            "https://my408355-api.s4hana.cloud.sap".to_string(),
+            "https://my408355.s4hana.cloud.sap".to_string(),
+        );
+        assert_eq!(
+            system_hosts("https://my408355.s4hana.cloud.sap/ui#Shell-home"),
+            want
+        );
+        assert_eq!(system_hosts("https://my408355-api.s4hana.cloud.sap/"), want);
+        assert_eq!(
+            system_hosts("https://1a2b.abap.eu10.hana.ondemand.com"),
+            (
+                "https://1a2b.abap.eu10.hana.ondemand.com".to_string(),
+                "https://1a2b.abap-web.eu10.hana.ondemand.com".to_string()
+            )
+        );
+        assert_eq!(
+            system_hosts("https://s4d.example.com:44300/sap/bc/gui"),
+            (
+                "https://s4d.example.com:44300".to_string(),
+                "https://s4d.example.com:44300".to_string()
+            )
+        );
+    }
 }

@@ -212,6 +212,112 @@ await step('settings: light theme, larger editor font', async () => {
   await page.click('[data-act="set-theme"][data-id="dark"]').catch(() => page.keyboard.press('Control+Alt+D'));
 });
 
+const saveNow = async (name) => {
+  await page.keyboard.press('Control+s');
+  const tr = page.waitForSelector('.modal >> text=Select transport request', { timeout: 3000 }).then(() => page.click('.modal button[type=submit]')).catch(() => {});
+  await page.waitForSelector(`.toast >> text=Saved ${name}`);
+  await tr;
+};
+const palette = async (text) => {
+  await page.keyboard.press('Control+Shift+P');
+  await page.keyboard.type(text, { delay: 5 });
+  await page.waitForTimeout(250);
+  await page.keyboard.press('Enter');
+};
+
+await step('local history and compare: active version, history entry, restore', async () => {
+  await page.click('.tab >> text=ZCL_NUSA_FLIGHT_SERVICE');
+  const h = await cm();
+  await page.evaluate(c => { c.replaceRange('* change one\n', { line: 0, ch: 0 }); c.focus(); }, h);
+  await saveNow('ZCL_NUSA_FLIGHT_SERVICE');
+  await page.evaluate(c => { c.replaceRange('* change two\n', { line: 0, ch: 0 }); c.focus(); }, h);
+  await palette('Compare With: Active');
+  await page.waitForSelector('.df-bar >> text=Active version');
+  const st = (await page.textContent('.df-stats')).replace(/\s+/g, ' ').trim();
+  if (st !== '+2 −0') throw new Error('active diff ' + st);
+  if ((await page.$$('.df-body .d-add')).length !== 2) throw new Error('rows');
+  await shot('11-compare');
+  await page.click('[data-act="df-edit"]');
+  await page.waitForSelector('.tab.on >> text=ZCL_NUSA_FLIGHT_SERVICE');
+  await palette('Compare With: Local History');
+  await page.waitForSelector('.pick.hist button');
+  await page.click('.pick.hist button');
+  await page.waitForSelector('.df-bar >> text=Local');
+  const st2 = (await page.textContent('.df-stats')).replace(/\s+/g, ' ').trim();
+  if (st2 !== '+1 −0') throw new Error('history diff ' + st2);
+  await page.click('[data-act="df-restore"]');
+  await page.waitForSelector('.toast >> text=Replaced the editor content');
+  const first = await page.evaluate(c => c.getLine(0), await cm());
+  if (first !== '* change one') throw new Error('restored ' + first);
+});
+
+await step('unsaved changes survive a restart as a draft', async () => {
+  const h = await cm();
+  await page.evaluate(c => { c.replaceRange('* draft line\n', { line: 0, ch: 0 }); c.focus(); }, h);
+  await page.waitForTimeout(1200);
+  await page.reload();
+  await page.waitForSelector('.toast >> text=Restored your unsaved changes to ZCL_NUSA_FLIGHT_SERVICE');
+  const first = await page.evaluate(() => document.querySelector('.CodeMirror').CodeMirror.getLine(0));
+  if (first !== '* draft line') throw new Error('draft ' + first);
+  if (!(await page.$('.tab.on .tclose.dirty'))) throw new Error('not dirty');
+  await page.click('.toast-act >> text=Show changes');
+  await page.waitForSelector('.df-bar >> text=System version');
+  await page.click('[data-act="df-edit"]');
+  await page.keyboard.press('Control+z');
+  await page.waitForFunction(() => !document.querySelector('.tab.on .tclose.dirty'));
+});
+
+await step('VS Code editing keys: Ctrl+D, Alt+Down, Shift+Alt+Down, Ctrl+Shift+K', async () => {
+  await page.click('.tab >> text=ZR_NUSA_FLIGHTS');
+  await page.waitForSelector('.tab.on >> text=ZR_NUSA_FLIGHTS');
+  await page.waitForFunction(() => /^REPORT/m.test(document.querySelector('.CodeMirror').CodeMirror.getValue()));
+  const h = await cm();
+  const before = await page.evaluate(c => c.getValue(), h);
+  const l = await page.evaluate(c => { const l = c.getValue().split('\n').findIndex(x => /\blo_service\b/.test(x)); c.setCursor({ line: l, ch: c.getLine(l).indexOf('lo_service') + 2 }); c.focus(); return l; }, h);
+  await page.keyboard.press('Control+d');
+  await page.keyboard.press('Control+d');
+  const sels = await page.evaluate(c => c.getSelections(), h);
+  if (sels.length !== 2 || sels.some(x => x !== 'lo_service')) throw new Error('ctrl+d ' + JSON.stringify(sels));
+  await page.keyboard.press('Escape');
+  await page.evaluate(([c, l]) => c.setCursor({ line: l, ch: 4 }), [h, l]);
+  const line = await page.evaluate(([c, l]) => c.getLine(l), [h, l]);
+  await page.keyboard.press('Alt+ArrowDown');
+  if (await page.evaluate(([c, l]) => c.getLine(l + 1), [h, l]) !== line) throw new Error('alt+down');
+  await page.keyboard.press('Alt+ArrowUp');
+  await page.keyboard.press('Shift+Alt+ArrowDown');
+  if (await page.evaluate(([c, l]) => c.getLine(l + 1), [h, l]) !== line) throw new Error('copy line');
+  await page.keyboard.press('Control+Shift+k');
+  if (await page.evaluate(c => c.getValue(), h) !== before) throw new Error('delete line');
+  for (let i = 0; i < 6; i++) await page.keyboard.press('Control+z');
+  if (await page.evaluate(c => c.getValue(), h) !== before) throw new Error('undo');
+});
+
+await step('clean up on save', async () => {
+  await page.click('[data-view="settings"]');
+  await page.check('#setCleanSave');
+  await page.click('.tab >> text=ZR_NUSA_FLIGHTS');
+  const h = await cm();
+  await page.evaluate(c => { const l = c.getValue().split('\n').findIndex(x => /^\s*LOOP AT/.test(x)); c.replaceRange('  DATA lv_n TYPE i.\n  MOVE 5 TO lv_n.\n', { line: l, ch: 0 }); c.focus(); }, h);
+  await saveNow('ZR_NUSA_FLIGHTS');
+  const v = await page.evaluate(c => c.getValue(), h);
+  if (/MOVE 5 TO/.test(v) || !/lv_n = 5\./.test(v)) throw new Error('not cleaned');
+  await page.uncheck('#setCleanSave');
+});
+
+await step('Eclipse guide and connection log', async () => {
+  await palette('Coming from Eclipse');
+  await page.waitForSelector('.modal .eclipse-list').catch(() => { throw new Error('guide'); });
+  await shot('12-eclipse');
+  await page.click('.modal button:has-text("Close")');
+  await page.waitForSelector('#modal', { state: 'hidden' }).catch(() => { throw new Error('guide close'); });
+  await page.waitForTimeout(300);
+  await palette('Show Connection Log');
+  await page.waitForSelector('.modal pre.diag').catch(() => { throw new Error('log'); });
+  if (!/Nusa ADT diagnostics/.test(await page.textContent('.modal pre.diag'))) throw new Error('log text');
+  await page.click('.modal button:has-text("Close")');
+  await page.waitForSelector('#modal', { state: 'hidden' });
+});
+
 await step('phone width has no horizontal overflow', async () => {
   await page.setViewportSize({ width: 400, height: 800 });
   await page.waitForTimeout(200);

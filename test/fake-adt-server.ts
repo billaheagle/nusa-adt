@@ -47,6 +47,9 @@ export class FakeAdtServer implements HttpTransport {
     if (p === '/sap/bc/adt/checkruns') return this.ok('<chkrun:checkRunReports xmlns:chkrun="http://www.sap.com/adt/checkrun"><chkrun:checkReport><chkrun:checkMessageList/></chkrun:checkReport></chkrun:checkRunReports>');
     if (p === '/sap/bc/adt/activation') {
       const uris = [...(r.body || '').matchAll(/adtcore:uri="([^"]+)"/g)].map(m => m[1]);
+      // like SAP: activation runs in its own session and stops at an editor's enqueue lock
+      const locked = uris.map(u => this.find(u)).find(o => o && o.lock);
+      if (locked) return this.ok(`<exc:exception xmlns:exc="x"><localizedMessage>User DEV is currently editing ${locked.name}</localizedMessage></exc:exception>`, 400);
       for (const u of uris) { const o = this.find(u); if (o) o.active = { ...o.src }; }
       return this.ok('');
     }

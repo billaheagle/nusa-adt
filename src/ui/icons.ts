@@ -52,3 +52,49 @@ export const ic = (name: string, cls = '') => `<svg class="ic ${cls}" viewBox="0
 
 /** Gunungan (the wayang "mountain") with code brackets: the Nusa Studio mark. */
 export const LOGO = `<svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1.5C14.8 4.3 19.4 9.3 20.3 14.2c.4 2.1-.3 3.8-1.6 4.8v2.3H5.3V19c-1.3-1-2-2.7-1.6-4.8C4.6 9.3 9.2 4.3 12 1.5Z" fill="currentColor"/><path d="M9.7 10.4 7.5 13l2.2 2.6M14.3 10.4l2.2 2.6-2.2 2.6" fill="none" stroke="var(--chrome)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+/** Object type icons: one line drawing per type, coloured per family by the .g-TYPE class. */
+const T: Record<string, string> = {
+  CLAS: '<path d="M12 3 20 7.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5 12 12l8-4.5M12 12v9"/>',
+  INTF: '<circle cx="7" cy="12" r="3.5"/><path d="M10.5 12h10M17 8v8"/>',
+  PROG: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="m7.5 9.5 3 2.5-3 2.5M12.5 15h4"/>',
+  TABL: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M3.5 14.5h17M9.5 9.5v10"/>',
+  DDLS: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/>',
+  DDLX: '<circle cx="12" cy="12" r="3.2"/><path d="M15.2 12v1.6a2.3 2.3 0 0 0 4.6 0V12a7.8 7.8 0 1 0-3 6.1"/>',
+  DCLS: '<path d="M12 3 5 6v6c0 4 3 7.5 7 9 4-1.5 7-5 7-9V6z"/><circle cx="12" cy="11" r="1.6"/><path d="M12 12.6V15"/>',
+  BDEF: '<path d="M13 2.5 5 13.5h6l-1 8 8-11h-6z"/>',
+  SRVD: '<circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.3 10.9 15.7 7.1M8.3 13.1l7.4 3.8"/>',
+  SRVB: '<circle cx="12" cy="12" r="2"/><path d="M8 8a5.7 5.7 0 0 0 0 8M16 8a5.7 5.7 0 0 1 0 8M5.2 5.2a9.6 9.6 0 0 0 0 13.6M18.8 5.2a9.6 9.6 0 0 1 0 13.6"/>',
+  HTTP: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.5 2.6 3.6 5.3 3.6 8.5s-1.1 5.9-3.6 8.5c-2.5-2.6-3.6-5.3-3.6-8.5s1.1-5.9 3.6-8.5z"/>',
+  EVTB: '<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
+  DTEL: '<path d="M3.5 12.2V4.5h7.7l9.3 9.3-7.7 7.7z"/><circle cx="8" cy="9" r="1.4"/>',
+  DOMA: '<rect x="3" y="8" width="18" height="8" rx="1.5"/><path d="M7 8v3M10.5 8v4M14 8v3M17.5 8v4"/>',
+  TTYP: '<path d="M8.5 6.5h12M8.5 12h12M8.5 17.5h12"/><circle cx="4.5" cy="6.5" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="17.5" r="1"/>',
+  MSAG: '<path d="M4 5.5h16v10H9.5L4 19.5z"/><path d="M8 9.5h8M8 12.5h5"/>',
+  AUTH: '<rect x="3" y="5.5" width="18" height="13" rx="2"/><circle cx="8.5" cy="11" r="2"/><path d="M5.8 15.5c.6-1.4 1.6-2 2.7-2s2.1.6 2.7 2M14 10h4M14 13.5h3"/>',
+  SUSO: '<circle cx="8" cy="15" r="4"/><path d="m11 12 8.5-8.5M16 7l2.5 2.5"/>',
+  SUSH: '<path d="M8.5 4.5h7v3h-7z"/><path d="M8.5 6H6v14.5h12V6h-2.5"/><path d="m9 13.5 2 2 4-4"/>',
+  SUCO: '<path d="M8.5 4.5h7v3h-7z"/><path d="M8.5 6H6v14.5h12V6h-2.5M9 12h6M9 16h4"/>',
+  SIA1: '<path d="M5 4.5h11a2 2 0 0 1 2 2v13H7a2 2 0 0 1-2-2z"/><path d="M5 17.5a2 2 0 0 1 2-2h11M9 8.5h5"/>',
+  SIA2: '<path d="M4 5h16l-6 7.5V19l-4-2v-4.5z"/>',
+  SIA3: '<circle cx="8" cy="15" r="4"/><path d="m11 12 6-6M15 8l2 2M19.5 3v4.5M17.25 5.25h4.5"/>',
+  SIA5: '<path d="M4 5h16l-6 7.5V19l-4-2v-4.5z"/><path d="M9 8.5h6"/>',
+  SIA6: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
+  SIA7: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+  SIA8: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 19.5c1-3.4 3.8-5.2 7-5.2s6 1.8 7 5.2"/>',
+  SIA9: '<circle cx="8" cy="9" r="3"/><path d="M3 18.5c.8-2.8 2.7-4.2 5-4.2s4.2 1.4 5 4.2M15 9h6M18 6v6"/>',
+  SCO1: '<path d="M4 8h13l-3-3M20 16H7l3 3"/>',
+  SCO2: '<path d="M14 4.5h4.5A1.5 1.5 0 0 1 20 6v12a1.5 1.5 0 0 1-1.5 1.5H14"/><path d="M3.5 12H14M10.5 8.5 14 12l-3.5 3.5"/>',
+  SCO3: '<path d="M10 4.5H5.5A1.5 1.5 0 0 0 4 6v12a1.5 1.5 0 0 0 1.5 1.5H10"/><path d="M9.5 12h11M17 8.5l3.5 3.5-3.5 3.5"/>',
+  COTA: '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1"/>',
+  SMBC: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
+  SAJC: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  SAJT: '<rect x="4" y="5.5" width="16" height="15" rx="2"/><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4M8 14h3"/>',
+  NROB: '<path d="M9.5 4 7.5 20M16.5 4l-2 16M5 9h15M4 15h15"/>',
+  APLO: '<path d="M14 3.5H6.5v17h11V7z"/><path d="M14 3.5V7h3.5M9 11h6M9 14.5h6M9 18h4"/>',
+  XOBJ: '<path d="M12 3 20 7.5v9L12 21l-8-4.5v-9z" stroke-dasharray="3 2.5"/>',
+  DEVC: '<path d="M3.5 7A1.5 1.5 0 0 1 5 5.5h4l2 2h8A1.5 1.5 0 0 1 20.5 9v8.5A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5z"/>',
+  DATA: '<rect x="3.5" y="4.5" width="17" height="15" rx="1.5"/><path d="M3.5 9.5h17M3.5 14.5h17M9.5 9.5v10M15.5 9.5v10"/>',
+};
+export const typeIcon = (type: string) => `<svg viewBox="0 0 24 24" aria-hidden="true">${T[type] || T.XOBJ}</svg>`;
+export const TYPE_ICON_NAMES = Object.keys(T);

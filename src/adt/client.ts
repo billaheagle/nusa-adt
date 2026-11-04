@@ -324,9 +324,15 @@ export class AdtClient {
     return id;
   }
 
+  /** Who is logged on, as the system sees it (browser logon does not tell us the user ID). */
+  async systemInformation(): Promise<{ userName?: string; systemID?: string; client?: string }> {
+    const r = await this.req({ method: 'GET', path: '/sap/bc/adt/core/http/systeminformation', accept: 'application/vnd.sap.adt.core.http.systeminformation.v1+json, application/json' });
+    try { return JSON.parse(r.body); } catch { return {}; }
+  }
+
   async userTransports(user: string): Promise<Transport[]> {
     const r = await this.req({
-      method: 'GET', path: '/sap/bc/adt/cts/transportrequests', query: { user, targets: 'true' },
+      method: 'GET', path: '/sap/bc/adt/cts/transportrequests', query: { user: user || undefined, targets: 'true' },
       accept: 'application/vnd.sap.adt.transportorganizertree.v1+xml',
     });
     return parseTransportTree(r.body);

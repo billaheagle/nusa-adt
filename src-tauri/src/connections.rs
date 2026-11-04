@@ -53,7 +53,8 @@ impl Connection {
         self.kind != other.kind
             || self.url != other.url
             || self.client != other.client
-            || self.user != other.user
+            // the user only matters for user/password logons; browser logons learn it later
+            || (self.auth == Auth::Basic && self.user != other.user)
             || self.language != other.language
             || self.auth != other.auth
             || self.allow_self_signed != other.allow_self_signed

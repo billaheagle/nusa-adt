@@ -50,13 +50,27 @@ export class AdtBackend implements Backend {
   async connections() { this.conns = await this.store.list(); return this.conns; }
   async saveConnection(c: Connection, secret?: string) { await this.store.save(c, secret); this.conns = await this.store.list(); }
 
+  /** user IDs learned from the system, for browser logons where the user typed none */
+  private users = new Map<string, string>();
+  private userOf(conn: string) { return (this.info(conn).user || this.users.get(conn) || '').toUpperCase(); }
+
   async connect(conn: string): Promise<SystemInfo> {
     const cl = this.c(conn);
     await cl.discovery();
     const components = await cl.components().catch(() => [] as string[]);
     const basis = components.find(x => /^SAP_BASIS|^SAP_CLOUD/.test(x));
+    const ci = this.info(conn);
+    if (!ci.user && ci.kind !== 'runner') {
+      const si = await cl.systemInformation().catch(() => ({} as { userName?: string }));
+      if (si.userName) {
+        this.users.set(conn, si.userName);
+        // remember it, so the transport list and new objects carry the right owner next time
+        await this.store.save({ ...ci, user: si.userName.toUpperCase() }).catch(() => undefined);
+        this.conns = await this.store.list().catch(() => this.conns);
+      }
+    }
     await this.refreshInactive(conn);
-    return { release: basis || (this.info(conn).kind === 'runner' ? 'Local ABAP runner' : 'Connected'), components };
+    return { release: basis ? prettyRelease(basis) : (ci.kind === 'runner' ? 'Local ABAP runner' : 'Connected'), components };
   }
 
   private async refreshInactive(conn: string) {
@@ -88,7 +102,7 @@ export class AdtBackend implements Backend {
   }
 
   async createPackage(conn: string, p: NewPackage, transport?: string): Promise<PkgRef> {
-    await this.c(conn).createPackage(p, this.info(conn).user, transport);
+    await this.c(conn).createPackage(p, this.userOf(conn), transport);
     return { name: p.name.toUpperCase(), desc: p.desc };
   }
 
@@ -202,7 +216,7 @@ export class AdtBackend implements Backend {
   }
 
   async createObject(conn: string, type: ObjType, name: string, desc: string, pkg: string, transport?: string, extra: CreateExtra = {}): Promise<ObjRef> {
-    const uri = await this.c(conn).createObject(type, name, desc, pkg, this.info(conn).user, transport, extra);
+    const uri = await this.c(conn).createObject(type, name, desc, pkg, this.userOf(conn), transport, extra);
     if (transport) this.transportOf.set(conn + '|' + uri, transport);
     this.inactive.get(conn)?.add(uri);
     return { uri, name: name.toUpperCase(), type, pkg, desc };
@@ -277,7 +291,7 @@ export class AdtBackend implements Backend {
   }
 
   async transports(conn: string): Promise<Transport[]> {
-    const list = await this.c(conn).userTransports(this.info(conn).user);
+    const list = await this.c(conn).userTransports(this.userOf(conn));
     this.trCache.set(conn, list);
     return list;
   }
@@ -334,7 +348,7 @@ export class AdtBackend implements Backend {
 
   // ------------------------------------------------------------------ debugger (experimental)
   async debugStart(conn: string, obj: ObjRef, bps: Breakpoint[]): Promise<DebugState | null> {
-    const d = new AdtDebugger(this.c(conn), this.info(conn).user);
+    const d = new AdtDebugger(this.c(conn), this.userOf(conn));
     await d.setBreakpoints(bps.map(b => ({ sourceUrl: sourceUrl(b.uri, b.include), line: b.line })));
     this.dbg = { conn, d, obj };
     const listening = d.listen(90000);
@@ -372,4 +386,11 @@ export class AdtBackend implements Backend {
     this.dbg = null;
     return { done: true, frames: [], vars: [], outputSoFar: out };
   }
+}
+
+/** "SAP_BASIS 920;SAPK-92005INSAPBASIS;0005;SAP Basis Component" -> "SAP_BASIS 920 SP05" */
+export function prettyRelease(c: string): string {
+  const m = /^(\S+)\s+([^;]+)(?:;[^;]*;(\d+))?/.exec(c);
+  if (!m) return c;
+  return m[3] ? `${m[1]} ${m[2]} SP${m[3].replace(/^0+(?=\d\d)/, '')}` : `${m[1]} ${m[2]}`;
 }

@@ -24,11 +24,19 @@ test('edit cycle against an ADT server: lock, transport, write test include, act
   assert.ok(srv.log.includes('POST /sap/bc/adt/oo/classes/zcl_demo/includes'), 'created test include on 404');
   assert.equal((await b.state('npl', obj)).inactive, true);
   assert.equal((await b.transportNeed('npl', obj)).current, tr);
+  // SAP refuses to activate while an editor holds the lock: the workbench unlocks after saving
+  await assert.rejects(b.activate('npl', [obj]), /currently editing/);
+  await b.unlock('npl', obj, lock);
   const act = await b.activate('npl', [obj]);
   assert.equal(act.ok, true);
   assert.equal((await b.state('npl', obj)).inactive, false);
   const trs = await b.transports('npl');
   assert.deepEqual(trs[0].objects, ['R3TR CLAS ZCL_DEMO']);
   assert.equal((await b.run('npl', obj)).output, 'Hello from ZCL_DEMO');
-  await b.unlock('npl', obj, lock);
+});
+
+import { prettyRelease } from '../src/backends/adt';
+test('release names read like the system information in Eclipse', () => {
+  assert.equal(prettyRelease('SAP_BASIS 920;SAPK-92005INSAPBASIS;0005;SAP Basis Component'), 'SAP_BASIS 920 SP05');
+  assert.equal(prettyRelease('SAP_BASIS 758'), 'SAP_BASIS 758');
 });

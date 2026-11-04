@@ -13,7 +13,7 @@ import {
   SystemInfo, Transport, TransportNeed, TYPE_INFO, UnitResult, uriFor,
 } from '../core/types';
 import { bpLines, bpMarker, CM, createEditor, deleteLines, duplicateLines, moveLines, newDoc, selectNextOccurrence, startCompletion, wordAt } from './editor';
-import { ic, LOGO } from './icons';
+import { ic, LOGO, typeIcon } from './icons';
 import { cleanAbap, DEFAULT_RULES, RuleId, RULES } from '../core/cleaner';
 import { planRap, rapNames, validateRap } from '../core/rapgen';
 import { keywordDocUrl } from '../core/docs';
@@ -400,8 +400,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
 
   // ------------------------------------------------------------------ rendering
   function glyph(type: ObjType | 'DATA') {
-    if (type === 'DATA') return `<i class="glyph g-DATA">${ic('grid')}</i>`;
-    return `<i class="glyph g-${type}">${TYPE_INFO[type].glyph}</i>`;
+    return `<i class="glyph g-${type}" title="${esc(type === 'DATA' ? 'Data preview' : TYPE_INFO[type].label)}">${typeIcon(type)}</i>`;
   }
   const isForm = (t: Tab | undefined) => !!t && t.view === 'source' && TYPE_INFO[t.ref.type].editor === 'xml';
   const typeLabel = (o: ObjRef) => o.type === 'XOBJ' ? (o.typeLabel || o.adtType || 'Object') : TYPE_INFO[o.type].label;
@@ -480,6 +479,8 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     const data = pkgCache()[name];
     let inner = '';
     if (open) {
+      // open from an earlier session but not read yet: read it now
+      if (!data) queueMicrotask(() => { if (!pkgCache()[name]) loadPkg(name); });
       if (!data || data === 'loading') inner = `<li class="empty" style="--d:${depth + 1}"><i class="spin"></i>Loading</li>`;
       else if ('error' in data) inner = `<li class="empty err" style="--d:${depth + 1}">${esc(data.error)} <button class="link" data-act="pkg-retry" data-pkg="${esc(name)}">Try again</button></li>`;
       else {
@@ -583,11 +584,27 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
           <ul class="tr-objs">${t.objects.map(e => {
             const [, type, name] = e.split(' ');
             const o = allObjs().find(x => x.name === name && x.type === type);
-            const g = type in TYPE_INFO ? glyph(type as ObjType) : `<i class="glyph g-DEVC">${type === 'DEVC' ? 'K' : '?'}</i>`;
+            const g = type in TYPE_INFO ? glyph(type as ObjType) : `<i class="glyph g-${type === 'DEVC' ? 'DEVC' : 'XOBJ'}">${typeIcon(type)}</i>`;
             return `<li>${o ? `<button class="link" data-act="open" data-uri="${esc(o.uri)}">` : '<span>'}${g}${esc(name)}${o ? '</button>' : '</span>'}<small>R3TR ${esc(type)}</small></li>`;
           }).join('') || '<li class="empty">No objects recorded</li>'}</ul>
           ${t.status === 'modifiable' ? `<div class="tr-actions"><button class="btn ghost small" data-act="release" data-id="${esc(t.id)}">Release…</button></div>` : ''}
-        </li>`).join('') || '<li class="empty">No requests</li>'}</ul>`;
+        </li>`).join('') || (c.user ? `<li class="empty">No requests of ${esc(c.user)} on ${esc(c.sid)}</li>` : '')}</ul>
+      ${!list.length && !c.user ? `<form class="side-pad tr-user" id="trUser">
+        <p class="note">Nusa Studio lists the requests of your user. With browser logon it could not read your user ID from ${esc(c.sid)}; enter it once (shown in Eclipse or in the Fiori launchpad under your profile, for example CB9980000000).</p>
+        <label class="field"><span>Your user ID</span><input id="trUserId" autocomplete="off" spellcheck="false" required></label>
+        <button class="btn small primary" type="submit">Show my requests</button></form>` : ''}`;
+    const uf = document.getElementById('trUser') as HTMLFormElement | null;
+    if (uf) uf.onsubmit = async (e) => {
+      e.preventDefault();
+      const u = $<HTMLInputElement>('#trUserId').value.trim().toUpperCase();
+      if (!u) return;
+      try {
+        await backend.saveConnection({ ...conn(), user: u });
+        S.conns = await backend.connections();
+        S.transports = await backend.transports(S.conn);
+        renderAll();
+      } catch (er) { fail(er, 'Reading the requests'); }
+    };
     ($('#newTr') as HTMLFormElement).onsubmit = async (e) => {
       e.preventDefault();
       const desc = $<HTMLInputElement>('#newTrDesc').value.trim();
@@ -924,6 +941,20 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       </section>`}</div>`;
   }
 
+  /** "On this page" marks the section being read, like a docs site. */
+  function tocFollow() {
+    const pane = $('#pane');
+    const toc = pane.querySelector('.of-toc');
+    if (!toc) return;
+    const cards = [...pane.querySelectorAll<HTMLElement>('.of-main > [id^="of-sec"]')];
+    if (!cards.length) return;
+    const line = pane.getBoundingClientRect().top + 120;
+    let at = cards[0];
+    for (const c of cards) if (c.getBoundingClientRect().top <= line) at = c;
+    if (pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 4) at = cards[cards.length - 1];
+    toc.querySelectorAll<HTMLElement>('button').forEach(b => { const on = b.dataset.id === at.id; b.classList.toggle('on', on); if (on) b.setAttribute('aria-current', 'true'); else b.removeAttribute('aria-current'); });
+  }
+
   function renderPane() {
     const t = cur();
     if (!t) return;
@@ -946,7 +977,8 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
         const isBox = el instanceof HTMLInputElement && el.type === 'checkbox';
         if (el instanceof HTMLInputElement && el.type === 'radio' && !el.checked) return;
         let v = isBox ? String((el as HTMLInputElement).checked) : el.value;
-        if (isBox) { const lbl = el.parentElement?.querySelector('span'); if (lbl) lbl.textContent = (el as HTMLInputElement).checked ? 'On' : 'Off'; }
+        if (isBox && el.dataset.invert) v = String(!(el as HTMLInputElement).checked);   // "Active" switch over an "inactive" flag
+        if (isBox) { const lbl = el.parentElement?.querySelector('span'); if (lbl) lbl.textContent = el.dataset.invert ? ((el as HTMLInputElement).checked ? 'Active' : 'Inactive') : (el as HTMLInputElement).checked ? 'On' : 'Off'; }
         // numbers keep the zero-padded width the system uses ("000010")
         const w = +(el.dataset.pad || 0);
         if (w && /^\d+$/.test(v)) v = v.padStart(w, '0');
@@ -970,6 +1002,8 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
         const badge = pane.querySelector('.of-badges .pill');
         if (badge) { badge.textContent = 'Unsaved changes'; badge.className = 'pill p-warn'; }
       };
+      pane.onscroll = tocFollow;
+      requestAnimationFrame(tocFollow);
       pane.querySelectorAll<Ctl>('input[data-xpath], textarea[data-xpath], select[data-xpath]').forEach(el => {
         const box = el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio');
         if (box || el instanceof HTMLSelectElement) el.onchange = () => apply(el);
@@ -1433,12 +1467,19 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
         remember(t, inc, text, tr ? `Saved · ${tr}` : 'Saved');
         dropDraft(t, inc);
       }
+      // Like Eclipse, give the lock back after saving: activation runs in its own session and
+      // fails with "is currently editing" while this editor still holds the enqueue lock.
+      // The next change locks the object again.
+      const held = t.lock;
+      t.lock = undefined;
+      if (held && held !== 'pending') await backend.unlock(t.conn, t.ref, held).catch(() => undefined);
       t.ref = await backend.state(t.conn, t.ref);
       await updateObjInCache(t.ref);
       const d = docs.get(docKey(t, t.include));
       if (d) setProblems(t.ref.uri, await backend.syntaxCheck(t.conn, t.ref, t.include, d.getValue()).catch(() => []), t.include);
       if (conn().transports) S.transports = await backend.transports(S.conn).catch(() => S.transports);
-      toast(`Saved ${t.ref.name}. It is inactive until you activate it.`, 'ok');
+      const trUsed = tr || t.ref.transport;
+      toast(`Saved ${t.ref.name}${trUsed ? ` in ${trUsed}` : ''}. It is inactive until you activate it.`, 'ok');
       return true;
     });
     renderAll();
@@ -1448,6 +1489,8 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   async function activate(t = cur()) {
     if (!t || t.view === 'data') return;
     if (isDirty(t) && !(await save(t))) return;
+    // a lock left from an edit that was undone would block the activation
+    if (!isDirty(t) && t.lock && t.lock !== 'pending') { const l = t.lock; t.lock = undefined; await backend.unlock(t.conn, t.ref, l).catch(() => undefined); }
     const st = await backend.state(t.conn, t.ref).catch(() => t.ref);
     if (!st.inactive) { toast(`${t.ref.name} is already active`); return; }
     await busy(`Activating ${t.ref.name}`, async () => {

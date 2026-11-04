@@ -4,14 +4,10 @@
 // Every edit changes the XML text, so saving, drafts, history and compare work as for source.
 
 import { ObjType } from '../core/types';
-import { FieldDef, guessValueHelp, Layout, LAYOUTS, TableDef } from './layouts';
+import { ACTIVITIES, FieldDef, guessValueHelp, Layout, LAYOUTS, TableDef } from './layouts';
 
 const ADT = 'http://www.sap.com/adt/core';
 const HIDDEN_NS = new Set(['http://www.w3.org/2005/Atom']);
-const HEADER_ATTRS: [string, string][] = [
-  ['type', 'Type'], ['responsible', 'Responsible'], ['masterLanguage', 'Original language'], ['version', 'Version'],
-  ['createdBy', 'Created by'], ['createdAt', 'Created'], ['changedBy', 'Changed by'], ['changedAt', 'Changed'],
-];
 
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
 
@@ -130,12 +126,24 @@ const valueOf = (h: Hit | null) => !h ? '' : h.attr ? h.attr.value : h.el.childr
 const shown = (v: string, number: boolean) => number && /^0+\d/.test(v) ? String(+v) : v;
 const pad = (v: string) => /^0\d+$/.test(v) ? ` data-pad="${v.length}"` : '';
 
+/** Value getter for layouts; "plugin:<uiObject>:<flag>" reads the editor settings the system sends. */
+function getter(doc: Document) {
+  return (at: string) => {
+    if (at.startsWith('plugin:')) {
+      const [, ui, flag] = at.split(':');
+      const pc = Array.from(doc.getElementsByTagNameNS('*', 'pluginConfig')).find(p => Array.from(p.children).some(c => c.localName === 'uiObject' && (c.textContent || '').trim() === ui));
+      return (pc && Array.from(pc.children).find(c => c.localName === flag)?.textContent?.trim()) || '';
+    }
+    return valueOf(findAt(doc, at));
+  };
+}
+
 /** Applies a layout's follow-up changes (fixed lengths, clearing fields) after an edit. */
 export function layoutEffects(type: ObjType, xml: string, at: string, value: string): { xml: string; rerender: boolean } {
   const lay = LAYOUTS[type];
   if (!lay?.effects) return { xml, rerender: false };
   const doc = parse(xml);
-  const get = (a: string) => valueOf(findAt(doc, a));
+  const get = getter(doc);
   const set = (a: string, v: string) => {
     const h = findAt(doc, a);
     if (!h) return;
@@ -179,7 +187,7 @@ function control(c: Ctl, id: string): string {
     let txt = v;
     if (c.kind === 'bool' || v === 'true' || v === 'false') return `<div class="of-value">${v === 'true' ? '<span class="of-yes">Yes</span>' : '<span class="of-no">No</span>'}</div>`;
     if (c.options) txt = c.options.find(o => o[0] === v)?.[1] || v;
-    return `<div class="of-value ${isCode(v) ? 'mono' : ''}">${txt ? esc(txt) : '<span class="of-empty">Not set</span>'}</div>`;
+    return `<div class="of-value ${isCode(txt) ? 'mono' : ''}">${txt ? esc(txt) : '<span class="of-empty">Not set</span>'}</div>`;
   }
   if (c.kind === 'bool' || (!c.kind && (v === 'true' || v === 'false'))) {
     return `<label class="of-switch"><input id="${id}" type="checkbox" role="switch" ${data} ${v === 'true' ? 'checked' : ''}><i aria-hidden="true"></i><span>${v === 'true' ? 'On' : 'Off'}</span></label>`;
@@ -268,7 +276,8 @@ function genericContent(e: Element, path: string, ro: boolean, level: number): s
 interface Section { id: string; title: string; help?: string; half?: boolean; count?: number; html: string; more?: boolean }
 
 function layoutSections(doc: Document, lay: Layout, ro: boolean, used: Set<Element>): Section[] {
-  const get = (a: string) => valueOf(findAt(doc, a));
+  const get = getter(doc);
+  for (const h of lay.hide || []) { const e = findAt(doc, h); if (e) used.add(e.el); }
   const out: Section[] = [];
   lay.sections.forEach((sec, i) => {
     let html = '';
@@ -303,6 +312,7 @@ function layoutSections(doc: Document, lay: Layout, ro: boolean, used: Set<Eleme
       if (trs) html += `<div class="of-table labels"><table><thead><tr><th></th><th scope="col">Length</th><th scope="col">Field label</th></tr></thead><tbody>${trs}</tbody></table></div>`;
     }
     if (b?.kind === 'table') html += layoutTable(doc, b, ro, used, c => { count = c; });
+    if (b?.kind === 'auths') html += authsBlock(doc, ro, used, c => { count = c; });
     if (html) out.push({ id: `of-sec-${i}`, title: sec.title, help: sec.help, half: sec.half, count, html });
   });
   return out;
@@ -322,13 +332,52 @@ function layoutTable(doc: Document, b: TableDef, ro: boolean, used: Set<Element>
     const num = b.number ? valueOf({ el: Array.from(r.children).find(k => k.localName === b.number) || r }) || String(i + 1) : String(i + 1);
     const cells = b.columns.map(c => {
       const k = Array.from(r.children).find(x => x.localName === c.at);
-      return k ? cell(`${indexPath(k)}#`, (k.textContent || '').trim(), ro, c.label, c.vh, c.width) : '<td><span class="of-empty">–</span></td>';
+      return k ? cell(`${indexPath(k)}#`, (k.textContent || '').trim(), ro || !!c.ro, c.label, c.vh, c.width) : '<td><span class="of-empty">–</span></td>';
     }).join('');
-    return `<tr><td class="of-num">${esc(shown(num, true))}</td>${cells}${ro ? '' : delBtn(rp, i)}</tr>`;
+    return `<tr><td class="of-num">${esc(shown(num, true))}</td>${cells}${ro || b.fixedRows ? '' : delBtn(rp, i)}</tr>`;
   }).join('');
-  const add = ro ? '' : `<button type="button" class="of-add" data-act="xf-add-row" data-at="${esc(b.at)}" data-row="${esc(rowName)}" data-cols="${esc(b.columns.map(c => c.at).join(','))}" data-num="${esc(b.number || '')}">${PLUS}Add ${esc(b.noun)}</button>`;
-  return `<div class="of-table">${rows.length ? `<table><thead><tr>${head}${ro ? '' : '<th class="of-row-act"><span class="sr">Actions</span></th>'}</tr></thead><tbody>${body}</tbody></table>` : `<p class="of-none pad">No ${esc(b.noun)}s yet.</p>`}</div>${add}`;
+  const add = ro || b.fixedRows ? '' : `<button type="button" class="of-add" data-act="xf-add-row" data-at="${esc(b.at)}" data-row="${esc(rowName)}" data-cols="${esc(b.columns.map(c => c.at).join(','))}" data-num="${esc(b.number || '')}">${PLUS}Add ${esc(b.noun)}</button>`;
+  return `<div class="of-table">${rows.length ? `<table><thead><tr>${head}${ro || b.fixedRows ? '' : '<th class="of-row-act"><span class="sr">Actions</span></th>'}</tr></thead><tbody>${body}</tbody></table>` : `<p class="of-none pad">No ${esc(b.noun)}s yet.</p>`}</div>${add}`;
 }
+/** IAM app authorizations: one block per authorization object, its fields and their values. */
+function authsBlock(doc: Document, ro: boolean, used: Set<Element>, setCount: (n: number) => void): string {
+  const auths = Array.from(doc.getElementsByTagNameNS('*', 'auth')).filter(a => a.parentElement?.localName === 'auths');
+  auths.forEach(a => used.add(a));
+  const container = Array.from(doc.getElementsByTagNameNS('*', 'auths'))[0];
+  if (container) used.add(container);
+  setCount(auths.length);
+  if (!auths.length) return '<p class="of-none">This app needs no authorizations.</p>';
+  const kid = (e: Element, n: string) => Array.from(e.children).find(c => c.localName === n);
+  const txt = (e: Element | undefined) => (e?.textContent || '').trim();
+  return auths.map(a => {
+    const obj = txt(kid(a, 'authObject'));
+    const items = Array.from(kid(a, 'authItems')?.children || []);
+    const body = items.map(item => {
+      const inactive = kid(item, 'inactive');
+      const values = Array.from(kid(item, 'values')?.children || []);
+      const rows = values.map(v => {
+        const field = txt(kid(v, 'field'));
+        const isActvt = txt(kid(v, 'isActvt')) === 'true' || field === 'ACTVT';
+        const fvs = Array.from(kid(v, 'fieldValues')?.children || []);
+        const chips = fvs.map((fv, i) => {
+          const low = kid(fv, 'lowValue'), high = kid(fv, 'highValue');
+          const lv = txt(low), hv = txt(high);
+          if (ro || !low) return `<span class="of-chip mono">${esc(lv)}${hv ? ' – ' + esc(hv) : ''}</span>`;
+          const ctl = isActvt
+            ? `<select class="of-cell of-chip-in" data-xpath="${esc(indexPath(low))}#" aria-label="${esc(field)} value ${i + 1}">${(ACTIVITIES.some(x => x[0] === lv) ? ACTIVITIES : [[lv, lv] as [string, string], ...ACTIVITIES]).map(([k, l]) => `<option value="${esc(k)}" ${k === lv ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`
+            : `<input class="of-cell mono of-chip-in" data-xpath="${esc(indexPath(low))}#" value="${esc(lv)}" aria-label="${esc(field)} value ${i + 1}"${field === 'TABLE' ? ' data-vh="TABL"' : ''}>`;
+          return `<span class="of-chip edit">${ctl}${fvs.length > 1 ? `<button type="button" class="of-chip-x" data-act="xf-del" data-xpath="${esc(indexPath(fv))}" aria-label="Remove value">×</button>` : ''}</span>`;
+        }).join('');
+        const add = !ro && fvs.length ? `<button type="button" class="of-chip-add" data-act="xf-add" data-xpath="${esc(indexPath(fvs[fvs.length - 1]))}" aria-label="Add a value for ${esc(field)}">+ value</button>` : '';
+        return `<tr><th scope="row"><span class="mono">${esc(field)}</span><small>${esc(txt(kid(v, 'text')))}</small></th><td><div class="of-chips">${chips}${add}</div>${isActvt && txt(kid(v, 'val')) ? `<div class="of-note">${esc(txt(kid(v, 'val')).split(',').join(', '))}</div>` : ''}</td></tr>`;
+      }).join('');
+      const act = inactive && !ro ? `<label class="of-switch sm" title="Use this authorization"><input type="checkbox" role="switch" data-xpath="${esc(indexPath(inactive))}#" data-invert="1" ${txt(inactive) !== 'true' ? 'checked' : ''}><i aria-hidden="true"></i><span>${txt(inactive) !== 'true' ? 'Active' : 'Inactive'}</span></label>` : '';
+      return `<div class="of-auth-item">${act ? `<div class="of-auth-act">${act}</div>` : ''}<div class="of-table"><table><thead><tr><th scope="col">Field</th><th scope="col">Values</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+    }).join('');
+    return `<div class="of-auth"><div class="of-auth-h"><span class="mono">${esc(obj)}</span><span class="of-by">${esc(txt(kid(a, 'text')))}</span></div>${body}</div>`;
+  }).join('');
+}
+
 const singular = (at: string) => { const n = at.split('/').pop() as string; return n.endsWith('ies') ? n.slice(0, -3) + 'y' : n.endsWith('s') ? n.slice(0, -1) : n; };
 
 /** Leaf values a layout did not place, so nothing in the object is out of reach. */
@@ -341,6 +390,35 @@ function moreSection(doc: Document, used: Set<Element>, ro: boolean): string {
   });
   walk(doc.documentElement);
   return leaves.map(k => row({ xpath: `${indexPath(k)}#`, value: (k.textContent || '').trim(), ro, label: humanize(k.localName), tech: k.nodeName, vh: guessValueHelp(k.localName) })).join('');
+}
+
+// ------------------------------------------------------------------ header facts
+/** "2026-11-03T05:44:05Z" -> "3 Nov 2026, 12:44" in the viewer's time zone; midnight UTC -> date only */
+export function readableDate(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const dateOnly = /T00:00:00(\.0+)?Z$/.test(iso) || /^\d{4}-\d{2}-\d{2}$/.test(iso);
+  return dateOnly
+    ? d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
+    : d.toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+const LANG: Record<string, string> = { EN: 'English', DE: 'German', ID: 'Indonesian', FR: 'French', ES: 'Spanish', JA: 'Japanese', ZH: 'Chinese', PT: 'Portuguese', IT: 'Italian', NL: 'Dutch' };
+const LANG_VERSION: Record<string, string> = { cloudDevelopment: 'ABAP for Cloud Development', standard: 'Standard ABAP', keyUser: 'ABAP for Key Users', '5': 'ABAP for Cloud Development', '2': 'ABAP for Key Users', X: 'Standard ABAP' };
+
+function headerFacts(r: Element, pkg: string): { label: string; html: string }[] {
+  const a = (n: string) => r.getAttributeNS(ADT, n) || '';
+  const pkgRef = Array.from(r.children).find(c => c.namespaceURI === ADT && c.localName === 'packageRef');
+  const pkgDesc = pkgRef?.getAttributeNS(ADT, 'description') || '';
+  const who = (u: string) => u ? ` <span class="of-by">by <span class="mono">${esc(u)}</span></span>` : '';
+  const out: { label: string; html: string }[] = [];
+  if (pkg) out.push({ label: 'Package', html: `<span class="mono">${esc(pkg)}</span>${pkgDesc ? ` <span class="of-by">${esc(pkgDesc)}</span>` : ''}` });
+  if (a('responsible')) out.push({ label: 'Responsible', html: `<span class="mono">${esc(a('responsible'))}</span>` });
+  if (a('masterLanguage')) out.push({ label: 'Original language', html: esc(LANG[a('masterLanguage').toUpperCase()] ? `${LANG[a('masterLanguage').toUpperCase()]} (${a('masterLanguage')})` : a('masterLanguage')) });
+  if (a('masterSystem')) out.push({ label: 'Original system', html: `<span class="mono">${esc(a('masterSystem'))}</span>` });
+  if (a('abapLanguageVersion')) out.push({ label: 'ABAP language version', html: esc(LANG_VERSION[a('abapLanguageVersion')] || a('abapLanguageVersion')) });
+  if (a('createdAt') || a('createdBy')) out.push({ label: 'Created', html: `${a('createdAt') ? esc(readableDate(a('createdAt'))) : ''}${who(a('createdBy'))}` });
+  if (a('changedAt') || a('changedBy')) out.push({ label: 'Last changed', html: `${a('changedAt') ? esc(readableDate(a('changedAt'))) : ''}${who(a('changedBy'))}` });
+  return out;
 }
 
 // ------------------------------------------------------------------ page
@@ -358,7 +436,7 @@ export function renderXmlForm(xml: string, o: FormHeader): string {
   const a = (n: string) => r.getAttributeNS(ADT, n) || '';
   const pkg = Array.from(r.children).find(c => c.namespaceURI === ADT && c.localName === 'packageRef')?.getAttributeNS(ADT, 'name') || '';
   const descAttr = Array.from(r.attributes).find(x => x.namespaceURI === ADT && x.localName === 'description');
-  const facts: [string, string][] = ([['Package', pkg], ...HEADER_ATTRS.filter(([k]) => k !== 'type').map(([k, l]) => [l, a(k)])] as [string, string][]).filter(([, v]) => v);
+  const facts = headerFacts(r, pkg);
 
   const sections: Section[] = [];
   const lay = LAYOUTS[o.type];
@@ -385,7 +463,7 @@ export function renderXmlForm(xml: string, o: FormHeader): string {
       <div class="of-id">${o.glyph}<div class="of-titles"><div class="of-kicker">${esc(o.typeLabel)}</div><h1>${esc(a('name') || r.localName)}</h1></div>
         <div class="of-badges">${o.status ? `<span class="pill ${tone}">${esc(o.status.text)}</span>` : ''}${o.readOnly ? '<span class="pill p-muted">Read-only</span>' : ''}</div></div>
       ${descAttr ? `<div class="of-desc">${o.readOnly ? `<p class="of-lead">${esc(descAttr.value)}</p>` : `<label class="of-label" for="of-desc">Description</label><input id="of-desc" class="of-input w-lg" data-xpath="@${esc(descAttr.name)}" value="${esc(descAttr.value)}" maxlength="60" autocomplete="off">`}</div>` : ''}
-      ${facts.length ? `<dl class="of-meta">${facts.map(([l, v]) => `<div><dt>${esc(l)}</dt><dd class="${isCode(v) ? 'mono' : ''}">${esc(v)}</dd></div>`).join('')}</dl>` : ''}
+      ${facts.length ? `<dl class="of-meta">${facts.map(f => `<div><dt>${esc(f.label)}</dt><dd>${f.html}</dd></div>`).join('')}</dl>` : ''}
     </header>
     ${o.note ? `<div class="of-banner">${esc(o.note)}</div>` : ''}
     <div class="of-body">

@@ -25,9 +25,20 @@ export interface FieldDef {
   rerender?: boolean;
 }
 export interface LabelRowsDef { kind: 'labels'; rows: [string, string][] }
-export interface TableDef { kind: 'table'; at: string; columns: { at: string; label: string; width?: 'xs' | 'sm' | 'md' | 'lg'; vh?: string }[]; noun: string; number?: string }
-export interface SectionDef { title: string; help?: string; half?: boolean; fields?: FieldDef[]; block?: LabelRowsDef | TableDef }
-export interface Layout { sections: SectionDef[]; effects?: (at: string, value: string, set: (at: string, v: string) => void, get: Get) => boolean }
+export interface TableDef {
+  kind: 'table'; at: string; noun: string; number?: string;
+  columns: { at: string; label: string; width?: 'xs' | 'sm' | 'md' | 'lg'; vh?: string; ro?: boolean }[];
+  /** rows come from the system (services of an IAM app): no adding or removing here */
+  fixedRows?: string;
+}
+/** Authorizations of IAM apps and similar objects (commonAuthorization:auths). */
+export interface AuthsDef { kind: 'auths' }
+export interface SectionDef { title: string; help?: string; half?: boolean; fields?: FieldDef[]; block?: LabelRowsDef | TableDef | AuthsDef }
+export interface Layout {
+  sections: SectionDef[];
+  /** elements that are settings for the editor itself, not properties to show */
+  hide?: string[];
+  effects?: (at: string, value: string, set: (at: string, v: string) => void, get: Get) => boolean }
 
 /** ABAP Dictionary built-in types: name, description, fixed length (0 = no length), decimals allowed */
 export const DDIC_TYPES: [string, string, number | null, boolean][] = [
@@ -52,7 +63,45 @@ const DTEL_KINDS: [string, string][] = [
 const usesTypeName = (k: string) => ['domain', 'refToDictionaryType', 'refToClifType'].includes(k);
 const usesBuiltIn = (k: string) => ['predefinedAbapType', 'refToPredefinedAbapType'].includes(k);
 
+/** Standard activities (TACT) offered for ACTVT values. */
+export const ACTIVITIES: [string, string][] = [
+  ['01', '01 · Create or generate'], ['02', '02 · Change'], ['03', '03 · Display'], ['06', '06 · Delete'], ['07', '07 · Activate, generate'],
+  ['08', '08 · Display change documents'], ['16', '16 · Execute'], ['23', '23 · Maintain'], ['24', '24 · Archive'], ['36', '36 · Extended maintenance'],
+  ['43', '43 · Release'], ['70', '70 · Administer'], ['A9', 'A9 · Send'], ['F4', 'F4 · Look up'], ['*', '* · All activities'],
+];
+/** Plugin flags in the object tell the editor which IAM app fields to show and which to lock. */
+const shown = (ui: string) => (g: Get) => g(`plugin:${ui}:invisble`) !== 'true';
+const locked = (ui: string) => (g: Get) => g(`plugin:${ui}:inactive`) === 'true';
+
 export const LAYOUTS: Partial<Record<ObjType, Layout>> = {
+  SIA6: {
+    hide: ['pluginConfigs', 'migrationStatus', 'abapLanguageVersion', 'restrictions', 'appconfigs'],
+    sections: [
+      {
+        title: 'General Information',
+        fields: [
+          { at: 'appID', label: 'App ID', readOnly: () => true },
+          { at: 'appType', label: 'App type', kind: 'select', width: 'md', options: [['MBC', 'Business configuration (MBC)'], ['EXT', 'External app'], ['UI5', 'SAPUI5 app'], ['GEN', 'Generic app']], readOnly: locked('type_selectbox') },
+          { at: 'ui5AppId', label: 'UI5 application ID', width: 'md', when: shown('ui_app_id'), readOnly: locked('ui_app_id'), help: 'The SAPUI5 application the IAM app starts' },
+          { at: 'transactionCode', label: 'Transaction code', width: 'sm', when: shown('ui_tcode'), readOnly: locked('ui_tcode') },
+          { at: 'scopeDependent', label: 'Scope dependent', kind: 'bool', when: shown('scope_checkbox'), readOnly: locked('scope_checkbox') },
+          { at: 'secondaryID', label: 'Secondary ID', width: 'md', when: g => !!g('secondaryID') },
+          { at: 'providerClass', label: 'Provider class', width: 'md', vh: 'CLAS', when: g => !!g('providerClass') },
+          {
+            at: 'publishStatus', label: 'Publishing status', kind: 'select', readOnly: () => true, when: shown('ui_publishing_status'),
+            options: [['p', 'Published'], ['u', 'Not published'], ['', 'Not published']], help: 'Publishing makes the app available for business catalogs in this system',
+          },
+        ],
+      },
+      {
+        title: 'Services', help: 'Services the app uses. Add or remove services in Eclipse ADT; Nusa Studio shows them.',
+        block: { kind: 'table', at: 'services', noun: 'service', fixedRows: 'Services come from the system', columns: [
+          { at: 'typeText', label: 'Service type', ro: true }, { at: 'relServiceName', label: 'Service', ro: true }, { at: 'srvcDescription', label: 'Description', ro: true }, { at: 'srvcName', label: 'Internal name', ro: true },
+        ] },
+      },
+      { title: 'Authorizations', help: 'Authorization default values the app needs. Values can be changed here; add new authorization objects in Eclipse ADT.', block: { kind: 'auths' } },
+    ],
+  },
   DTEL: {
     sections: [
       {

@@ -5,7 +5,7 @@
 
 import { analyze, declaredMethods, implementedMethods, lineOf, prettyPrint, statements } from '../core/abap';
 import { Catalog, StdCatalog, WorkspaceCatalog } from '../core/catalog';
-import { demoDoma, demoDtel, demoXml, template } from '../core/templates';
+import { demoDoma, demoDtel, demoSia6, demoXml, template } from '../core/templates';
 import { completeAbap, completeCds } from '../core/complete';
 import {
   AtcFinding, Backend, BindingInfo, Breakpoint, Connection, CreateExtra, DebugState, DebugVar, GitRepo, Hit, Include, isCdsLike, Location,
@@ -216,14 +216,7 @@ SRC.ZNUSA_FLT = { main: demoXml('SUSO', 'ZNUSA_FLT', 'Nusa: flights by airline',
     <suso:activity suso:code="02" suso:text="Change"/>
     <suso:activity suso:code="03" suso:text="Display"/>
   </suso:activities>`) };
-SRC.ZNUSA_FLIGHT_APP = { main: demoXml('SIA6', 'ZNUSA_FLIGHT_APP', 'Nusa: manage flights', IAMPKG, `<sia6:general sia6:appType="External App" sia6:launchpadAppId="ZNUSA_FLIGHT_FLP"/>
-  <sia6:services>
-    <sia6:service sia6:type="OData V4" sia6:name="ZUI_NUSA_FLIGHT_O4" sia6:version="0001"/>
-  </sia6:services>
-  <sia6:authorizations>
-    <sia6:authorization sia6:object="ZNUSA_FLT" sia6:field="ACTVT" sia6:value="02, 03"/>
-    <sia6:authorization sia6:object="ZNUSA_FLT" sia6:field="ZNUSA_CARR" sia6:value="*"/>
-  </sia6:authorizations>`) };
+SRC.ZNUSA_FLIGHT_APP = { main: demoSia6('ZNUSA_FLIGHT_APP', 'Nusa: maintain airline settings', IAMPKG, { appType: 'MBC', service: 'ZUI_NUSA_FLIGHT_O4', table: 'ZNUSA_TRAVEL' }) };
 SRC.ZNUSA_FLIGHT_CS = { main: demoXml('SCO1', 'ZNUSA_FLIGHT_CS', 'Nusa: flight data for partners', IAMPKG, `<sco1:general sco1:scenarioType="Customer managed" sco1:allowedInstances="One instance per scenario and communication system"/>
   <sco1:inbound sco1:basicAuthentication="true" sco1:x509="true" sco1:oauth="false">
     <sco1:service sco1:name="ZUI_NUSA_FLIGHT_O4_IWSG" sco1:type="OData V4"/>
@@ -311,7 +304,7 @@ interface Persisted {
   pkgs?: Record<string, MPkg[]>; git?: Record<string, GitRepo[]>; favs?: Record<string, string[]>;
 }
 
-const STORE_KEY = 'nusa-adt-mock-v4';
+const STORE_KEY = 'nusa-adt-mock-v5';
 
 /** Standard objects the DEMO system offers in value helps. */
 const VH_STANDARD: [string, string, string][] = [

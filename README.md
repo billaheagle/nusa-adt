@@ -65,6 +65,8 @@ Where Eclipse ADT is still ahead: the debugger, refactorings such as rename and 
 - New objects grouped like Eclipse: classes, interfaces, programs, database tables, CDS data definitions, metadata extensions, access controls, behavior definitions, service definitions and service bindings
 - **Authorizations, Identity and Access Management, Cloud Communication Management, Business Configuration Management**, application jobs and dictionary objects: authorization fields and objects, default values and variants, IAM apps, business catalogs and role templates, restriction types and fields, communication scenarios, inbound and outbound services, business configuration objects, data elements, domains, table types, message classes, number range and application log objects. They open in a form editor and save, lock, record in transports and activate like source code
 - **Form editors laid out like Eclipse**: data elements (Data Type with category choices, built-in types with their length rules, Field Labels with character counters, Additional Properties with search help, parameter ID and change document) and domains (Format, Output Characteristics, Value Range with fixed values and value table). Other types get the same look, built from the object's own structure; nothing is hidden, and an XML view is always one click away
+- **IAM apps laid out like Eclipse**: General Information, services, and authorizations per authorization object with editable values (activities as a choice list). Which fields show and which are locked follows the editor settings the system sends with the app
+- An icon for every object type, coloured per family (source code, CDS, dictionary, authorizations, IAM, communication, configuration)
 - **Value help** on fields that name repository objects (`Ctrl+Space` or the search button): domains, data elements, tables, search helps, parameters, classes, authorization objects and more, searched in the connected system
 - Any other object type in a package is listed with the system's own folder name and can be viewed
 - Service binding editor with **Publish / Unpublish** for OData V2 and V4, and the service URL
@@ -319,12 +321,13 @@ Nusa Studio is a preview. What has been verified so far:
 
 | Area | Status |
 |---|---|
-| Workbench UI end to end (DEMO system, real editor) | 28 scenarios, including the data element and domain forms with value help, preview tabs, collapse all, Format Document, the IAM app form and creating a communication scenario; edit, save, activate, completion while typing, packages, new objects, service binding publish, data preview, RAP generator, ABAP Cleaner, abapGit, compare and local history, draft recovery, multi-cursor and line editing, systems, themes, phone width |
+| Workbench UI end to end (DEMO system, real editor) | 29 scenarios, including the IAM app layout, the data element and domain forms with value help, preview tabs, collapse all, Format Document, the IAM app form and creating a communication scenario; edit, save, activate, completion while typing, packages, new objects, service binding publish, data preview, RAP generator, ABAP Cleaner, abapGit, compare and local history, draft recovery, multi-cursor and line editing, systems, themes, phone width |
 | Desktop shell against an in-memory ADT server | tested: title bar, error pages, save with transport, activate, session restore |
-| ABAP analysis, formatter, cleaner, RAP generator, diff, object types, completion contexts | 60 unit tests; the formatter is checked to keep every token of the sample sources |
+| ABAP analysis, formatter, cleaner, RAP generator, diff, object types, completion contexts | 61 unit tests; the formatter is checked to keep every token of the sample sources |
 | ADT response parsing and edit cycle | tested against recorded payload shapes and an in-memory ADT server |
 | Rust core | compiled and unit-tested by the `rust` job of the workflow before the installers are built |
-| Live SAP systems | not tested yet. Package creation, the newer object types, publishing, data preview and abapGit may need payload adjustments |
+| S/4HANA Cloud Public Edition | first checks on a live system: browser logon, package explorer with all object families, class and CDS editing, data element, domain and IAM app forms, service binding and data preview work. Package creation, publishing and abapGit are not checked yet |
+| Other live systems | on-premise S/4HANA and BTP ABAP are not checked yet |
 | Form-based objects on a live system | not tested yet. They are read and saved as the XML document the system returns. New ones are created by copying the format of an existing object of the same type in that system, so the first object of a type the system has never seen still needs Eclipse |
 | Browser logon | redirect to `http://localhost:<port>/adt/redirect`; BTP OAuth needs it allowed by the UAA |
 

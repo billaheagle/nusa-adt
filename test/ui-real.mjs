@@ -365,19 +365,21 @@ await step('form objects: IAM app opens as a form, edit, add a row, XML view, sa
   for (const f of ['Authorizations', 'Cloud Communication Management', 'Business Configuration Management']) await page.waitForSelector(`.row >> text=${f}`);
   await page.dblclick('.row.leaf >> text=ZNUSA_FLIGHT_APP');
   await page.waitForSelector('.of-head .of-kicker >> text=IAM App');
+  for (const t of ['General Information', 'Services', 'Authorizations']) await page.waitForSelector(`.of-card h2 >> text="${t}"`);
+  // the system's plugin settings decide: app type locked, transaction code hidden
+  await page.waitForSelector('.of-row.ro:has(.of-label:text-is("App type")) >> text=Business configuration (MBC)');
+  if (await page.$('.of-label:text-is("Transaction code")')) throw new Error('transaction code should be hidden');
+  await page.waitForSelector('.of-table >> text=ZUI_NUSA_FLIGHT_O4');
+  await page.waitForSelector('.of-auth-h >> text=S_TABU_NAM');
   await shot('13-iam-form');
-  const v = page.locator('.of-table input[aria-label="Value"]').first();
-  await v.fill('03');
+  await page.fill('[aria-label="TABLE value 1"]', 'ZNUSA_TRAVEL_D');
   await page.waitForSelector('.tab.on .tclose.dirty');
-  const sec = '.of-card:has(h2:text-is("Authorizations"))';
-  const rows = (await page.$$(`${sec} tbody tr`)).length;
-  if (rows !== 2) throw new Error('rows ' + rows);
-  await page.click(`${sec} [data-act="xf-add"]`);
-  await page.waitForFunction(n => [...document.querySelectorAll('.of-card')].find(c => c.querySelector('h2')?.textContent === 'Authorizations')?.querySelectorAll('tbody tr').length === n + 1, rows);
-  if (!(await page.$('.of-head .pill >> text=Unsaved changes')) && !(await page.$('.of-head .pill >> text=Inactive'))) throw new Error('status badge');
+  await page.click('[aria-label="Add a value for ACTVT"]');
+  await page.waitForFunction(() => document.querySelectorAll('select[aria-label^="ACTVT value"]').length === 4);
+  await page.selectOption('[aria-label="ACTVT value 4"]', '06');
   await page.click('[data-act="xml-mode"][data-id="xml"]');
   const xml = await page.evaluate(() => document.querySelector('.CodeMirror').CodeMirror.getValue());
-  if (!/sia6:value="03"/.test(xml)) throw new Error('xml not updated');
+  if (!/<commonAuthorization:lowValue>ZNUSA_TRAVEL_D</.test(xml) || !/<commonAuthorization:lowValue>06</.test(xml)) throw new Error('xml not updated');
   await page.click('[data-act="xml-mode"][data-id="form"]');
   await saveNow('ZNUSA_FLIGHT_APP');
   if (await page.$('.toast.t-error')) throw new Error(await page.textContent('.toast.t-error'));
@@ -478,6 +480,13 @@ await step('domain like Eclipse: format, output, fixed values', async () => {
   await page.waitForTimeout(200);
   await shot('21-doma-wide');
   await page.setViewportSize({ width: 1440, height: 880 });
+});
+
+await step('open subpackages load after a restart instead of staying on "Loading"', async () => {
+  await page.reload();
+  await page.waitForSelector('.tab.on');
+  await explorer();
+  await page.waitForFunction(() => ![...document.querySelectorAll('#sideBody .empty')].some(e => /Loading/.test(e.textContent)), null, { timeout: 8000 });
 });
 
 await step('phone width has no horizontal overflow', async () => {

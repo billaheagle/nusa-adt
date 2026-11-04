@@ -119,25 +119,79 @@ const LIB_NAME: &str = if cfg!(windows) {
     "libsapnwrfc.so"
 };
 
-/// Finds the SDK library in the folder the user picked: the SDK root, its lib folder, or
-/// the folder the ZIP was extracted to.
+/// Finds the SDK library in the folder the user picked: the SDK root, its lib folder, the
+/// folder the ZIP was extracted to, or deeper (Windows "Extract all" adds a folder level).
 pub fn find_library(dir: &str) -> Option<PathBuf> {
-    let d = Path::new(dir.trim());
-    [
+    let d = Path::new(dir.trim().trim_matches('"'));
+    let direct = [
         d.join(LIB_NAME),
         d.join("lib").join(LIB_NAME),
         d.join("nwrfcsdk").join("lib").join(LIB_NAME),
-    ]
-    .into_iter()
-    .find(|p| p.is_file())
+    ];
+    if let Some(p) = direct.into_iter().find(|p| p.is_file()) {
+        return Some(p);
+    }
+    search(d, 4, &|n| n.eq_ignore_ascii_case(LIB_NAME))
+}
+
+fn search(dir: &Path, depth: u32, want: &dyn Fn(&str) -> bool) -> Option<PathBuf> {
+    let entries: Vec<_> = std::fs::read_dir(dir).ok()?.flatten().collect();
+    for e in &entries {
+        let p = e.path();
+        if p.is_file() && p.file_name().and_then(|n| n.to_str()).is_some_and(want) {
+            return Some(p);
+        }
+    }
+    if depth == 0 {
+        return None;
+    }
+    entries
+        .iter()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .find_map(|p| search(&p, depth - 1, want))
+}
+
+/// Why the folder has no usable SDK, in words the user can act on.
+fn not_found(dir: &str) -> String {
+    let d = Path::new(dir.trim().trim_matches('"'));
+    let platform = if cfg!(windows) {
+        "Windows on x64 64bit"
+    } else if cfg!(target_os = "macos") {
+        "macOS"
+    } else {
+        "Linux on x86_64 64bit"
+    };
+    if !d.is_dir() {
+        return format!("The folder \"{dir}\" does not exist. Choose the folder where you extracted the SAP NW RFC SDK (it contains lib\\{LIB_NAME}).");
+    }
+    // an SDK for another operating system: same layout, other file names
+    let other = ["sapnwrfc.dll", "libsapnwrfc.so", "libsapnwrfc.dylib"]
+        .into_iter()
+        .filter(|n| *n != LIB_NAME)
+        .find_map(|n| search(d, 4, &|f| f.eq_ignore_ascii_case(n)));
+    if let Some(p) = other {
+        return format!("\"{dir}\" holds the RFC SDK for another operating system ({}). Download SAP NW RFC SDK 7.50 for {platform} and extract it here.", p.display());
+    }
+    let sar = search(d, 2, &|f| f.to_ascii_lowercase().ends_with(".sar"));
+    if let Some(p) = sar {
+        return format!("{} is still packed. Extract it with SAPCAR (sapcar -xvf <file>.SAR), then choose the extracted folder.", p.display());
+    }
+    let seen: Vec<String> = std::fs::read_dir(d)
+        .map(|r| {
+            r.flatten()
+                .take(12)
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    format!("The SAP NW RFC SDK was not found in \"{dir}\" (it contains: {}). Choose the folder that contains lib\\{LIB_NAME}, from SAP NW RFC SDK 7.50 for {platform}.", if seen.is_empty() { "nothing".to_string() } else { seen.join(", ") })
 }
 
 static LOADED: Mutex<Option<(PathBuf, Arc<Sdk>)>> = Mutex::new(None);
 
 pub fn load(dir: &str) -> Result<Arc<Sdk>, String> {
-    let path = find_library(dir).ok_or_else(|| {
-        format!("The SAP NW RFC SDK was not found in \"{dir}\". Choose the folder that contains the lib folder with {LIB_NAME} (for example C:\\SAP\\nwrfcsdk).")
-    })?;
+    let path = find_library(dir).ok_or_else(|| not_found(dir))?;
     let mut cache = LOADED.lock().unwrap();
     if let Some((p, sdk)) = cache.as_ref() {
         if *p == path {
@@ -179,8 +233,36 @@ pub fn load(dir: &str) -> Result<Arc<Sdk>, String> {
 }
 
 #[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn SetDllDirectoryW(path: *const u16) -> i32;
+}
+
+#[cfg(windows)]
 fn open_library(path: &Path) -> Result<Library, String> {
-    // The SDK's ICU DLLs sit next to sapnwrfc.dll: let Windows look in that folder.
+    // The SDK loads its ICU DLLs (icuuc57.dll, icudt57.dll, icuin57.dll) itself while it
+    // initialises, looking along PATH; without this it shows "I18N Initialization: Could not
+    // open the ICU common library". Put the SDK's lib folder first on this process's PATH and
+    // in the DLL search path, as if the user had added it to PATH by hand.
+    if let Some(dir) = path.parent() {
+        let old = std::env::var_os("PATH").unwrap_or_default();
+        let already = std::env::split_paths(&old).any(|p| p == dir);
+        if !already {
+            let mut parts = vec![dir.to_path_buf()];
+            parts.extend(std::env::split_paths(&old));
+            if let Ok(joined) = std::env::join_paths(parts) {
+                std::env::set_var("PATH", joined);
+            }
+        }
+        let wide: Vec<u16> = dir
+            .as_os_str()
+            .to_string_lossy()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        // SAFETY: wide is NUL-terminated and lives for the call.
+        unsafe { SetDllDirectoryW(wide.as_ptr()) };
+    }
     const LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR: u32 = 0x0000_0100;
     const LOAD_LIBRARY_SEARCH_DEFAULT_DIRS: u32 = 0x0000_1000;
     // SAFETY: loading a library runs its initialisers; this is SAP's own SDK chosen by the user.
@@ -505,9 +587,30 @@ mod tests {
     }
 
     #[test]
+    fn sdk_found_deeper_or_for_another_platform() {
+        let base = std::env::temp_dir().join(format!("nusa-rfc-{}", std::process::id()));
+        let deep = base.join("nwrfc750P_20").join("nwrfcsdk").join("lib");
+        std::fs::create_dir_all(&deep).unwrap();
+        let other = if cfg!(windows) {
+            "libsapnwrfc.so"
+        } else {
+            "sapnwrfc.dll"
+        };
+        std::fs::write(deep.join(other), b"x").unwrap();
+        let msg = load(base.to_str().unwrap()).err().unwrap();
+        assert!(msg.contains("another operating system"), "{msg}");
+        std::fs::write(deep.join(LIB_NAME), b"x").unwrap();
+        assert_eq!(
+            find_library(base.to_str().unwrap()),
+            Some(deep.join(LIB_NAME))
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn missing_sdk_folder_is_reported() {
         assert!(find_library("/definitely/not/here").is_none());
         let msg = load("/definitely/not/here").err().unwrap();
-        assert!(msg.contains("was not found"));
+        assert!(msg.contains("does not exist"), "{msg}");
     }
 }

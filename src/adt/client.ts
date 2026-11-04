@@ -4,7 +4,7 @@
 
 import { asxValues, attr, all, base64Utf8, encode, first, kid, kids, parseStart, parseXml, textOf, XEl } from './xml';
 import {
-  ADT_TYPE, BindingInfo, GitRepo, Include, NewPackage, ObjRef, ObjType, PkgRef, PreviewResult, Transport, TYPE_INFO, ValueHelpItem,
+  ADT_TYPE, adtTypeOf, BindingInfo, GitRepo, Include, NewPackage, ObjRef, ObjType, PkgRef, PreviewResult, Transport, TYPE_INFO, ValueHelpItem,
 } from '../core/types';
 
 export interface HttpRequest {
@@ -153,7 +153,7 @@ export class AdtClient {
       pkg: attr(first(root, 'packageRef'), 'name') || '',
       desc: attr(root, 'description') || '',
       name: attr(root, 'name') || '',
-      type: ADT_TYPE[attr(root, 'type') || ''],
+      type: adtTypeOf(attr(root, 'type') || ''),
       lockedBy: attr(root, 'lockedBy') || undefined,
     };
   }
@@ -202,7 +202,8 @@ export class AdtClient {
     const pkgRef = `<adtcore:packageRef adtcore:name="${p}"/>`;
     const blue = (t: string) => `<blue:blueSource xmlns:blue="http://www.sap.com/wbobj/blue" ${core} ${common.replace(TYPE_INFO[type].adtType, t)}>${pkgRef}</blue:blueSource>`;
     const v4 = (extra.bindingType ?? 'V4') === 'V4';
-    const bodies: Record<ObjType, [string, string]> = {
+    if (TYPE_INFO[type].editor === 'xml') return this.createByExample(type, name, desc, pkg, user, transport);
+    const bodies: Partial<Record<ObjType, [string, string]>> = {
       CLAS: ['/sap/bc/adt/oo/classes', `<class:abapClass xmlns:class="http://www.sap.com/adt/oo/classes" ${core} ${common} class:final="true" class:visibility="public">${pkgRef}<class:include adtcore:name="CLAS/OC" adtcore:type="CLAS/OC" class:includeType="testclasses"/><class:superClassRef/></class:abapClass>`],
       INTF: ['/sap/bc/adt/oo/interfaces', `<intf:abapInterface xmlns:intf="http://www.sap.com/adt/oo/interfaces" ${core} ${common}>${pkgRef}</intf:abapInterface>`],
       PROG: ['/sap/bc/adt/programs/programs', `<program:abapProgram xmlns:program="http://www.sap.com/adt/programs/programs" ${core} ${common}>${pkgRef}</program:abapProgram>`],
@@ -214,9 +215,39 @@ export class AdtClient {
       SRVD: ['/sap/bc/adt/ddic/srvd/sources', `<srvd:srvdSource xmlns:srvd="http://www.sap.com/adt/ddic/srvdsources" ${core} ${common} srvd:srvdSourceType="S">${pkgRef}</srvd:srvdSource>`],
       SRVB: ['/sap/bc/adt/businessservices/bindings', `<srvb:serviceBinding xmlns:srvb="http://www.sap.com/adt/ddic/ServiceBindings" ${core} ${common} srvb:releaseSupported="false" srvb:published="false" srvb:bindingCreated="true">${pkgRef}<srvb:services srvb:name="${n}"><srvb:content srvb:version="0001"><srvb:serviceDefinition adtcore:name="${encode((extra.serviceDefinition || '').toUpperCase())}"/></srvb:content></srvb:services><srvb:binding srvb:type="ODATA" srvb:version="${v4 ? 'V4' : 'V2'}" srvb:category="${extra.category === 'Web API' ? '1' : '0'}"><srvb:implementation adtcore:name=""/></srvb:binding></srvb:serviceBinding>`],
     };
-    const [path, xml] = bodies[type];
+    const [path, xml] = bodies[type] as [string, string];
     await this.req({ method: 'POST', path, query: { corrNr: transport }, contentType: 'application/*', body: `<?xml version="1.0" encoding="UTF-8"?>${xml}` });
     return TYPE_INFO[type].adt + encodeURIComponent(name.toLowerCase());
+  }
+
+  // ------------------------------------------------------------------ form-based objects (XML documents)
+  /** The object's XML document and its media type, which a later PUT must send back. */
+  async objectXml(uri: string): Promise<{ xml: string; contentType: string }> {
+    const r = await this.req({ method: 'GET', path: uri, accept: 'application/*' });
+    return { xml: r.body, contentType: (r.headers['content-type'] || 'application/xml').split(';')[0].trim() };
+  }
+
+  async putObjectXml(uri: string, xml: string, contentType: string, lock: string, transport?: string): Promise<void> {
+    await this.req({ method: 'PUT', path: uri, query: { lockHandle: lock, corrNr: transport }, stateful: true, contentType: `${contentType}; charset=utf-8`, body: xml });
+  }
+
+  /**
+   * Creates a form-based object (IAM app, communication scenario, authorization object, …).
+   * Their XML formats differ per type and release, so the format is taken from an existing
+   * object of the same type in the system: same root element, namespaces and media type,
+   * posted to the same collection with the new name, description and package.
+   */
+  async createByExample(type: ObjType, name: string, desc: string, pkg: string, user: string, transport?: string): Promise<string> {
+    const code = TYPE_INFO[type].adtType || type;
+    const examples = await this.searchObjects('*', code, 5).catch(() => []);
+    const ex = examples.find(e => e.uri && e.uri.includes('/sap/bc/adt/') && !e.uri.includes('/vit/'));
+    if (!ex) throw new AdtError(`This system has no ${TYPE_INFO[type].label} that Nusa ADT can use as a model for the format, so it cannot create one yet. Create the first one in Eclipse ADT; after that Nusa ADT can create and edit more.`, 400);
+    const { xml, contentType } = await this.objectXml(ex.uri);
+    const body = newObjectXml(xml, { name, desc, pkg, user });
+    const collection = ex.uri.replace(/\/[^/]+$/, '');
+    const r = await this.req({ method: 'POST', path: collection, query: { corrNr: transport }, contentType, accept: 'application/*', body });
+    const loc = r.headers.location || r.headers['content-location'] || '';
+    return loc ? loc.replace(/^https?:\/\/[^/]+/, '') : `${collection}/${encodeURIComponent(name.toLowerCase())}`;
   }
 
   // ------------------------------------------------------------------ business services
@@ -401,16 +432,21 @@ export class AdtClient {
 export function parseNodeStructure(body: string, pkg: string): { packages: PkgRef[]; objects: ObjRef[] } {
   const objects: ObjRef[] = [];
   const packages: PkgRef[] = [];
-  for (const n of all(parseXml(body), 'SEU_ADT_REPOSITORY_OBJ_NODE')) {
+  const x = parseXml(body);
+  // folder names the system uses for each type ("Function Groups", "Message Classes", …)
+  const labels = new Map(all(x, 'SEU_ADT_OBJECT_TYPE_INFO').map(t => [textOf(t, 'OBJECT_TYPE'), textOf(t, 'OBJECT_TYPE_LABEL')] as [string, string]));
+  for (const n of all(x, 'SEU_ADT_REPOSITORY_OBJ_NODE')) {
     const raw = textOf(n, 'OBJECT_TYPE');
     const name = textOf(n, 'OBJECT_NAME');
     if (raw === 'DEVC/K') {
       if (name && name.toUpperCase() !== pkg.toUpperCase() && !packages.some(p => p.name === name)) packages.push({ name, desc: textOf(n, 'DESCRIPTION') });
       continue;
     }
-    const type = ADT_TYPE[raw];
-    if (!type || !textOf(n, 'OBJECT_URI')) continue;
-    objects.push({ uri: textOf(n, 'OBJECT_URI'), name, type, pkg, desc: textOf(n, 'DESCRIPTION') });
+    if (!raw || !textOf(n, 'OBJECT_URI') || !name) continue;
+    const type = adtTypeOf(raw);
+    const o: ObjRef = { uri: textOf(n, 'OBJECT_URI'), name, type, pkg, desc: textOf(n, 'DESCRIPTION') };
+    if (type === 'XOBJ') { o.adtType = raw; o.typeLabel = labels.get(raw) || raw.split('/')[0]; }
+    objects.push(o);
   }
   return { packages, objects };
 }
@@ -462,9 +498,10 @@ export function parseGitRepos(body: string): GitRepo[] {
 
 export function parseObjectReferences(body: string): ObjRef[] {
   return all(parseXml(body), 'objectReference').map(r => ({
-    uri: attr(r, 'uri') || '', name: attr(r, 'name') || '', type: ADT_TYPE[attr(r, 'type') || ''],
+    uri: attr(r, 'uri') || '', name: attr(r, 'name') || '', type: adtTypeOf(attr(r, 'type') || ''),
     pkg: attr(r, 'packageName') || '', desc: attr(r, 'description') || '',
-  })).filter(r => r.type && r.uri) as ObjRef[];
+    ...(adtTypeOf(attr(r, 'type') || '') === 'XOBJ' ? { adtType: attr(r, 'type') || '', typeLabel: (attr(r, 'type') || '').split('/')[0] } : {}),
+  })).filter(r => r.uri) as ObjRef[];
 }
 
 export function parseTransportCheck(body: string): TransportCheck {
@@ -544,4 +581,25 @@ export function parseAtc(body: string): AtcRaw[] {
   return all(parseXml(body), 'finding').map(f => ({
     prio: +(attr(f, 'priority') || 3), check: attr(f, 'checkTitle') || '', msg: attr(f, 'messageTitle') || '', location: attr(f, 'location') || '',
   }));
+}
+
+/** XML for a new form-based object, modelled on an existing one: root element, namespaces and adtcore:type are kept. */
+export function newObjectXml(example: string, o: { name: string; desc: string; pkg: string; user: string }): string {
+  const m = /<([A-Za-z_][\w.-]*:[A-Za-z_][\w.-]*|[A-Za-z_][\w.-]*)(\s[^>]*?)?\/?>/.exec(example.replace(/<\?xml[^>]*\?>/, '').replace(/<!--[\s\S]*?-->/g, ''));
+  if (!m) throw new AdtError('The model object has no XML document', 400);
+  const root = m[1];
+  const attrs = m[2] || '';
+  const ns = [...attrs.matchAll(/\sxmlns(:[\w.-]+)?="[^"]*"/g)].map(x => x[0].trim());
+  if (!ns.some(n => n.startsWith('xmlns:adtcore='))) ns.push('xmlns:adtcore="http://www.sap.com/adt/core"');
+  const type = /\sadtcore:type="([^"]*)"/.exec(attrs)?.[1];
+  const lang = /\sadtcore:masterLanguage="([^"]*)"/.exec(attrs)?.[1] || 'EN';
+  const a = [
+    ...ns,
+    `adtcore:name="${encode(o.name.toUpperCase())}"`,
+    `adtcore:description="${encode(o.desc)}"`,
+    ...(type ? [`adtcore:type="${encode(type)}"`] : []),
+    `adtcore:masterLanguage="${encode(lang)}"`,
+    `adtcore:responsible="${encode(o.user.toUpperCase())}"`,
+  ];
+  return `<?xml version="1.0" encoding="UTF-8"?><${root} ${a.join(' ')}><adtcore:packageRef adtcore:name="${encode(o.pkg.toUpperCase())}"/></${root}>`;
 }

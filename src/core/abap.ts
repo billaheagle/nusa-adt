@@ -182,7 +182,8 @@ export function analyze(lines: string[]): Analysis {
 const OPERATOR_WORDS = new Set(['EQ', 'NE', 'LT', 'GT', 'LE', 'GE', 'MOD']);
 const EXPECTS_OPERAND = new Set(['AT', 'INTO', 'FROM', 'TABLE', 'TO', 'OF', 'DATA', 'TYPE', 'LIKE', 'IN', 'CLEAR', 'APPEND', 'SORT', 'FREE', 'UPDATE', 'MODIFY', 'DELETE', 'INSERT']);
 
-export function caseCode(t: string): string {
+export function caseCode(t: string, mode: 'upper' | 'lower' | 'keep' = 'upper'): string {
+  if (mode === 'keep') return t;
   let prev = '';
   return segs(t).map(sg => sg.t !== 'code' ? (prev = '', sg.s) : sg.s.replace(/[A-Za-z_][\w-]*/g, (w, off: number, s: string) => {
     const pre = s.slice(Math.max(0, off - 2), off);
@@ -192,6 +193,7 @@ export function caseCode(t: string): string {
     else if (OPERATOR_WORDS.has(up) && EXPECTS_OPERAND.has(prev)) out = w.toLowerCase();  // "LOOP AT lt", "INTO to"
     else out = KWSET.has(up) ? up : w.toLowerCase();
     prev = out === up ? up : '';
+    if (mode === 'lower') out = out.toLowerCase();
     return out;
   })).join('');
 }

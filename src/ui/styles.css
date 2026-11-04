@@ -622,3 +622,44 @@ pre.diag { max-height: 46vh; overflow: auto; margin: 8px 0 0; padding: 10px 12px
 .set .check span small.txt { font: 11.5px var(--ui); }
 .modal.wide:has(.eclipse-list) { width: min(760px, calc(100vw - 32px)); }
 .eclipse-card li, .eclipse-list li { align-content: start; }
+.tab.preview .tname { font-style: italic; }
+
+/* ---------- 0.2: more object families */
+.g-DTEL, .g-DOMA, .g-TTYP { color: var(--num); }
+.g-MSAG { color: var(--str); }
+.g-AUTH, .g-SUSO, .g-SUSH, .g-SUCO { color: var(--err); }
+.g-SIA1, .g-SIA2, .g-SIA3, .g-SIA5, .g-SIA6, .g-SIA7, .g-SIA8, .g-SIA9 { color: var(--warn); }
+.g-SCO1, .g-SCO2, .g-SCO3, .g-COTA { color: var(--info); }
+.g-SMBC { color: var(--meta); }
+.g-SAJC, .g-SAJT, .g-NROB, .g-APLO, .g-HTTP, .g-EVTB { color: var(--prop); }
+.g-XOBJ { color: var(--faint); }
+
+/* form editor for XML-based objects */
+.xf { max-width: 980px; padding: 22px 28px 40px; }
+.xf-head { border-bottom: 1px solid var(--line); padding-bottom: 14px; margin-bottom: 8px; }
+.xf-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.xf-title h2 { margin: 0; font: 600 18px var(--mono); }
+.xf-facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px 16px; margin: 10px 0 0; font-size: 12px; }
+.xf-facts dt { color: var(--faint); font-size: 11px; }
+.xf-facts dd { margin: 0 0 4px; color: var(--fg); font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.xf-facts div { display: contents; }
+.xf-sec { margin-top: 18px; padding-left: calc(var(--xd, 0) * 14px); }
+.xf-sec h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); }
+.xf-sec h3 small { color: var(--faint); font-weight: 400; margin-left: 4px; }
+.xf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px 16px; align-items: end; }
+.xf-field { margin: 0; }
+.xf-head .xf-field { max-width: 560px; }
+.xf-check { display: flex; align-items: center; gap: 8px; font-size: 12.5px; min-height: 30px; }
+.xf-table { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 8px; }
+.xf-table table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+.xf-table th { text-align: left; font-weight: 600; color: var(--dim); background: var(--side); padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.xf-table td { padding: 3px 4px; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); }
+.xf-table tr:last-child td { border-bottom: 0; }
+.xf-table td input:not([type=checkbox]) { width: 100%; min-width: 90px; box-sizing: border-box; border: 1px solid transparent; background: transparent; color: var(--fg); font: 12.5px var(--mono); padding: 4px 6px; border-radius: 4px; }
+.xf-table td input:not([type=checkbox]):hover { border-color: var(--line); }
+.xf-table td input:not([type=checkbox]):focus { border-color: var(--accent); background: var(--bg); outline: none; }
+.xf-table td input[readonly] { color: var(--dim); }
+.xf-row-act { width: 1%; }
+.xf-row-act .icon-btn { width: 24px; height: 24px; font-size: 15px; color: var(--faint); }
+.xf-row-act .icon-btn:hover { color: var(--err); }
+@media (max-width: 760px) { .xf { padding: 16px; } .xf-sec { padding-left: 0; } }

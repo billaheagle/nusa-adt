@@ -42,14 +42,16 @@ Nusa ADT uses the same ADT services as Eclipse, so nothing changes on the SAP si
 
 New users see a short *Coming from Eclipse ADT* guide; it is also in the command palette.
 
-Where Eclipse ADT is still ahead: the debugger, refactorings such as rename and extract method, and object types Nusa ADT cannot create yet (function groups, message classes, data elements, domains). Nusa ADT is a preview and has not been verified against a live system yet (see [Status](#status)), so keep Eclipse at hand for those.
+Where Eclipse ADT is still ahead: the debugger, refactorings such as rename and extract method, function groups and modules, and the specialised editors of some object types (Nusa ADT shows authorization objects, IAM apps, communication scenarios and similar objects in a generic form). Nusa ADT is a preview and has not been verified against a live system yet (see [Status](#status)), so keep Eclipse at hand for those.
 
 ## Features
 
 **Editor**
 - ABAP and CDS highlighting, line numbers, bracket matching, comment toggle
 - Code completion that understands context: members of inferred types, DDIC fields, SQL clauses, call parameters, function module patterns, CDS annotations and more ([full list](#code-completion))
-- Go to definition (F3), element info (F2), ABAP keyword documentation (F1), where-used list, pretty printer
+- Go to definition (F3), element info (F2), ABAP keyword documentation (F1), where-used list
+- **Format Document** (`Shift+Alt+F` or `Shift+F1`): block indentation, aligned method parameters and chained declarations, keyword case of your choice; CDS sources are indented by braces. It runs offline and only changes whitespace and keyword case; the system's pretty printer is still available in Settings
+- **Preview tabs** like VS Code: a single click opens a temporary tab that the next click replaces; editing or double-clicking keeps it
 - Outline of classes, methods, attributes and CDS elements
 - VS Code editing: next match with several cursors (`Ctrl+D`), move lines (`Alt+↑/↓`), copy lines (`Shift+Alt+↓`), delete lines (`Ctrl+Shift+K`)
 - **Never lose work**: unsaved changes are kept as drafts and restored after a crash or restart; every save goes into local history
@@ -61,6 +63,8 @@ Where Eclipse ADT is still ahead: the debugger, refactorings such as rename and 
 - Project Explorer with favorite packages, subpackages and `$TMP`, object search
 - New packages with software component, transport layer and application component value helps
 - New objects grouped like Eclipse: classes, interfaces, programs, database tables, CDS data definitions, metadata extensions, access controls, behavior definitions, service definitions and service bindings
+- **Authorizations, Identity and Access Management, Cloud Communication Management, Business Configuration Management**, application jobs and dictionary objects: authorization fields and objects, default values and variants, IAM apps, business catalogs and role templates, restriction types and fields, communication scenarios, inbound and outbound services, business configuration objects, data elements, domains, table types, message classes, number range and application log objects. They open in a form editor (fields and tables, with an XML view) and save, lock, record in transports and activate like source code
+- Any other object type in a package is listed with the system's own folder name and can be viewed
 - Service binding editor with **Publish / Unpublish** for OData V2 and V4, and the service URL
 - Lock, save inactive, activate, activate all inactive objects, delete objects
 - Class includes in tabs: global class, local types, test classes
@@ -94,6 +98,13 @@ Where Eclipse ADT is still ahead: the debugger, refactorings such as rename and 
 <summary><b>Light theme and Transport Organizer</b></summary>
 
 ![Nusa ADT in light mode with the Transport Organizer](docs/screenshot-light.png)
+
+</details>
+
+<details>
+<summary><b>IAM app in the form editor</b></summary>
+
+![IAM app with services and authorizations in the form editor](docs/screenshot-iam.png)
 
 </details>
 
@@ -240,7 +251,7 @@ Other scripts:
 | New object | `Ctrl+N` | Settings | `Ctrl+,` |
 | Save | `Ctrl+S` | Activate | `Ctrl+F3` |
 | Activate all inactive | `Ctrl+Shift+F3` | Check syntax | `Ctrl+F2` |
-| Pretty printer | `Shift+F1` | ABAP Cleaner | `Ctrl+4` |
+| Format document | `Shift+Alt+F` / `Shift+F1` | ABAP Cleaner | `Ctrl+4` |
 | Code completion | `Ctrl+Space` | Element info | `F2` |
 | Keyword documentation | `F1` | Go to definition | `F3` |
 | Run, data preview | `F8` / `F9` | SQL console | `Ctrl+Alt+F8` |
@@ -299,12 +310,13 @@ Nusa ADT is a preview. What has been verified so far:
 
 | Area | Status |
 |---|---|
-| Workbench UI end to end (DEMO system, real editor) | 20 scenarios: edit, save, activate, completion while typing, packages, new objects, service binding publish, data preview, RAP generator, ABAP Cleaner, abapGit, compare and local history, draft recovery, multi-cursor and line editing, systems, themes, phone width |
+| Workbench UI end to end (DEMO system, real editor) | 24 scenarios, including preview tabs, Format Document, the IAM app form and creating a communication scenario; edit, save, activate, completion while typing, packages, new objects, service binding publish, data preview, RAP generator, ABAP Cleaner, abapGit, compare and local history, draft recovery, multi-cursor and line editing, systems, themes, phone width |
 | Desktop shell against an in-memory ADT server | tested: title bar, error pages, save with transport, activate, session restore |
-| ABAP analysis, cleaner, RAP generator, diff, completion contexts | 54 unit tests |
+| ABAP analysis, formatter, cleaner, RAP generator, diff, object types, completion contexts | 60 unit tests; the formatter is checked to keep every token of the sample sources |
 | ADT response parsing and edit cycle | tested against recorded payload shapes and an in-memory ADT server |
 | Rust core | compiled and unit-tested by the `rust` job of the workflow before the installers are built |
 | Live SAP systems | not tested yet. Package creation, the newer object types, publishing, data preview and abapGit may need payload adjustments |
+| Form-based objects on a live system | not tested yet. They are read and saved as the XML document the system returns. New ones are created by copying the format of an existing object of the same type in that system, so the first object of a type the system has never seen still needs Eclipse |
 | Browser logon | redirect to `http://localhost:<port>/adt/redirect`; BTP OAuth needs it allowed by the UAA |
 
 Found something that does not work with your system? Open an issue with the error message and the SAP release.

@@ -5,9 +5,11 @@
 import { systemHosts, systemUrl } from '../core/sysurl';
 import { addSnapshot, diffLines, diffStats, hunks, Snapshot } from '../core/diff';
 import { diagReport, logDiag } from '../core/diag';
+import { formatAbap, formatCds, KeywordCase } from '../core/format';
+import { addXmlRow, removeXmlRow, renderXmlForm, setXmlValue } from './xmlform';
 import {
   AtcFinding, Backend, BindingInfo, Breakpoint, Connection, CreateExtra, DebugState, DebugVar, GitRepo, GROUPS, Hit, Include,
-  INCLUDE_LABEL, isCdsLike, Location, ObjRef, ObjState, ObjType, PkgRef, PreviewResult, Problem, Proposal, RunResult, StepKind,
+  INCLUDE_LABEL, isCdsLike, isSourceType, Location, ObjRef, ObjState, ObjType, PkgRef, PreviewResult, Problem, Proposal, RunResult, StepKind,
   SystemInfo, Transport, TransportNeed, TYPE_INFO, UnitResult, uriFor,
 } from '../core/types';
 import { bpLines, bpMarker, CM, createEditor, deleteLines, duplicateLines, moveLines, newDoc, selectNextOccurrence, startCompletion, wordAt } from './editor';
@@ -27,10 +29,14 @@ interface DataState { entity?: string; sql: string; rows: number; result?: Previ
 interface Tab {
   key: string; conn: string; ref: ObjState; include: Include; lock?: string; view: TabView;
   data?: DataState; binding?: BindingInfo | { error: string } | null; diff?: DiffState;
+  /** Opened with a single click and not changed yet: the next single click reuses the tab (like VS Code). */
+  preview?: boolean;
+  /** form-based objects: show the XML text instead of the form */
+  raw?: boolean;
 }
 type PkgData = { packages: PkgRef[]; objects: ObjState[] } | 'loading' | { error: string };
 type ExtId = 'preview' | 'abapgit' | 'cleaner' | 'rapgen' | 'docs' | 'outline';
-interface Settings { editorFont: number; autoComplete: boolean; restoreTabs: boolean; cleanerRules: RuleId[]; ext: Record<ExtId, boolean>; formatOnSave: boolean; cleanOnSave: boolean; keepDrafts: boolean }
+interface Settings { editorFont: number; autoComplete: boolean; restoreTabs: boolean; cleanerRules: RuleId[]; ext: Record<ExtId, boolean>; formatOnSave: boolean; cleanOnSave: boolean; keepDrafts: boolean; previewTabs: boolean; formatter: 'nusa' | 'sap'; keywordCase: KeywordCase }
 const APP_VERSION = '0.2.0';
 
 const EXTENSIONS: { id: ExtId; name: string; icon: string; desc: string; keys: string }[] = [
@@ -73,7 +79,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   const settings: Settings = json<Settings>('nusa-adt-settings', {
     editorFont: 13, autoComplete: true, restoreTabs: true, cleanerRules: DEFAULT_RULES,
     ext: { preview: true, abapgit: true, cleaner: true, rapgen: true, docs: true, outline: true },
-    formatOnSave: false, cleanOnSave: false, keepDrafts: true,
+    formatOnSave: false, cleanOnSave: false, keepDrafts: true, previewTabs: true, formatter: 'nusa', keywordCase: 'upper',
   });
   const saveSettings = () => store.set('nusa-adt-settings', JSON.stringify(settings));
   const ext = (id: ExtId) => settings.ext[id] !== false;
@@ -364,6 +370,8 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     if (type === 'DATA') return `<i class="glyph g-DATA">${ic('grid')}</i>`;
     return `<i class="glyph g-${type}">${TYPE_INFO[type].glyph}</i>`;
   }
+  const isForm = (t: Tab | undefined) => !!t && t.view === 'source' && TYPE_INFO[t.ref.type].editor === 'xml';
+  const typeLabel = (o: ObjRef) => o.type === 'XOBJ' ? (o.typeLabel || o.adtType || 'Object') : TYPE_INFO[o.type].label;
   const tabGlyph = (t: Tab) => glyph(t.view === 'data' ? 'DATA' : t.ref.type);
   const tabName = (t: Tab) => t.view === 'data' ? (t.data?.entity || 'SQL Console') : t.view === 'diff' ? `${t.ref.name} ↔ ${t.diff?.leftLabel || ''}` : t.ref.name;
 
@@ -394,8 +402,9 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       if (!t) why = 'Open an object first';
       else if (cmd === 'run') why = runBlocker(t);
       else if (!src) why = 'Not available here';
+      else if (!isSourceType(t.ref.type) && ['check', 'format', 'unit', 'atc', 'run'].includes(cmd)) why = `Not available for ${typeLabel(t.ref)}s`;
       else if (cmd === 'unit' && t.ref.type !== 'CLAS') why = 'ABAP Unit runs on classes';
-      else if (cmd === 'format' && TYPE_INFO[t.ref.type].editor !== 'abap') why = 'The pretty printer formats ABAP source';
+      else if (cmd === 'format' && !['abap', 'cds'].includes(TYPE_INFO[t.ref.type].editor)) why = 'Nothing to format here';
       else if (cmd === 'atc' && TYPE_INFO[t.ref.type].editor === 'form') why = 'Not available for service bindings';
       b.disabled = !!why;
       const base = b.dataset.title || b.title;
@@ -445,9 +454,14 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
         for (const g of GROUPS) {
           const objs = data.objects.filter(o => TYPE_INFO[o.type].group === g.id);
           if (!objs.length) continue;
-          const folders = g.types.map(ty => {
+          const folders = g.types.flatMap(ty => {
             const list = objs.filter(o => o.type === ty).sort((a, b) => a.name.localeCompare(b.name));
-            return list.length ? treeNode(`${pkgId(name)}/${ty}`, TYPE_INFO[ty].folder, list.map(o => objRow(o, depth + 3)).join(''), `<span class="cnt">${list.length}</span>`, depth + 2) : '';
+            if (!list.length) return [];
+            // objects of types Nusa ADT has no editor for: one folder per type, named by the system
+            const sets: [string, string, ObjState[]][] = ty === 'XOBJ'
+              ? [...new Set(list.map(o => o.typeLabel || 'Other'))].sort().map(l => [`XOBJ-${l}`, l, list.filter(o => (o.typeLabel || 'Other') === l)])
+              : [[ty, TYPE_INFO[ty].folder, list]];
+            return sets.map(([id, label, l]) => treeNode(`${pkgId(name)}/${id}`, label, l.map(o => objRow(o, depth + 3)).join(''), `<span class="cnt">${l.length}</span>`, depth + 2));
           }).join('');
           parts.push(treeNode(`${pkgId(name)}/${g.id}`, g.label, folders, '', depth + 1));
         }
@@ -492,7 +506,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
           <input id="searchInput" value="${esc(S.searchQ)}" placeholder="ZCL_NUSA*" autocomplete="off" spellcheck="false"></label>
       </div>
       ${S.searchErr ? `<div class="side-pad sys-err">${esc(S.searchErr)}</div>` : ''}
-      <ul class="list">${res.map(o => `<li><button class="row leaf" data-act="open-search" data-uri="${esc(o.uri)}" data-ctx="obj">${glyph(o.type)}<span class="lbl">${esc(o.name)}<small>${esc(TYPE_INFO[o.type].label)}${o.pkg ? ' · ' + esc(o.pkg) : ''}${o.desc ? ' · ' + esc(o.desc) : ''}</small></span></button></li>`).join('') ||
+      <ul class="list">${res.map(o => `<li><button class="row leaf" data-act="open-search" data-uri="${esc(o.uri)}" data-ctx="obj">${glyph(o.type)}<span class="lbl">${esc(o.name)}<small>${esc(typeLabel(o))}${o.pkg ? ' · ' + esc(o.pkg) : ''}${o.desc ? ' · ' + esc(o.desc) : ''}</small></span></button></li>`).join('') ||
         (S.searchErr ? '' : `<li class="empty">${S.searchQ ? 'No objects match' : 'Type to search the repository of ' + esc(conn().sid)}</li>`)}</ul>`;
     const inp = $<HTMLInputElement>('#searchInput');
     inp.oninput = debounce(async () => {
@@ -507,7 +521,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
 
   function renderOutline() {
     const t = curSrc();
-    if (!t) { $('#sideBody').innerHTML = '<div class="side-pad note">Open a source object to see its structure.</div>'; return; }
+    if (!t || !isSourceType(t.ref.type)) { $('#sideBody').innerHTML = '<div class="side-pad note">Open a source object to see its structure.</div>'; return; }
     const items = outline(cm.getValue(), isCdsLike(t.ref.type));
     const KIC: Record<string, string> = { class: 'C', interface: 'I', method: 'm', attribute: 'a', constant: 'k', type: 't', event: 'e', form: 'f', section: '§', element: '·', entity: 'E', association: '→' };
     $('#sideBody').innerHTML = `<ul class="list outline">${items.map(i => `<li style="--d:${i.depth}"><button class="row leaf" data-act="goline" data-line="${i.line}"><i class="ol-k ol-${i.kind}">${KIC[i.kind]}</i><span class="lbl">${esc(i.name)}${i.detail ? `<small>${esc(i.detail)}</small>` : ''}</span><span class="cnt">${i.line + 1}</span></button></li>`).join('') || '<li class="empty">Nothing to outline</li>'}</ul>`;
@@ -670,7 +684,14 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
         <h3>Editor</h3>
         <label class="check"><input type="checkbox" id="setAuto" ${settings.autoComplete ? 'checked' : ''}><span>Show code completion while typing</span></label>
         <label class="check"><input type="checkbox" id="setRestore" ${settings.restoreTabs ? 'checked' : ''}><span>Reopen the editors of the last session</span></label>
+        <label class="check"><input type="checkbox" id="setPreview" ${settings.previewTabs ? 'checked' : ''}><span>Preview tabs<small class="txt">A single click opens a temporary tab that the next click replaces, until you edit or double-click it</small></span></label>
         <label class="check"><input type="checkbox" id="setDrafts" ${settings.keepDrafts ? 'checked' : ''}><span>Keep unsaved changes as drafts<small class="txt">Restored after a crash or restart</small></span></label>
+      </section>
+      <section class="set">
+        <h3>Formatting <small>Shift+Alt+F · Shift+F1</small></h3>
+        <label class="field"><span>ABAP formatter</span><select id="setFormatter"><option value="nusa" ${settings.formatter === 'nusa' ? 'selected' : ''}>Nusa formatter: indentation, aligned parameters, works offline</option><option value="sap" ${settings.formatter === 'sap' ? 'selected' : ''}>Pretty printer of the system (its user settings)</option></select></label>
+        <label class="field"><span>Keywords</span><select id="setKwCase"><option value="upper" ${settings.keywordCase === 'upper' ? 'selected' : ''}>UPPER CASE</option><option value="lower" ${settings.keywordCase === 'lower' ? 'selected' : ''}>lower case</option><option value="keep" ${settings.keywordCase === 'keep' ? 'selected' : ''}>Keep as written</option></select></label>
+        <p class="note">CDS sources are indented by braces with either setting.</p>
       </section>
       <section class="set">
         <h3>On save</h3>
@@ -692,6 +713,9 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     $<HTMLInputElement>('#setAuto').onchange = (e) => { settings.autoComplete = (e.target as HTMLInputElement).checked; saveSettings(); };
     $<HTMLInputElement>('#setRestore').onchange = (e) => { settings.restoreTabs = (e.target as HTMLInputElement).checked; saveSettings(); };
     $<HTMLInputElement>('#setDrafts').onchange = (e) => { settings.keepDrafts = (e.target as HTMLInputElement).checked; saveSettings(); };
+    $<HTMLInputElement>('#setPreview').onchange = (e) => { settings.previewTabs = (e.target as HTMLInputElement).checked; if (!settings.previewTabs) S.tabs.forEach(t => { t.preview = false; }); saveSettings(); renderTabs(); };
+    $<HTMLSelectElement>('#setFormatter').onchange = (e) => { settings.formatter = (e.target as HTMLSelectElement).value as Settings['formatter']; saveSettings(); };
+    $<HTMLSelectElement>('#setKwCase').onchange = (e) => { settings.keywordCase = (e.target as HTMLSelectElement).value as KeywordCase; saveSettings(); };
     $<HTMLInputElement>('#setFmtSave').onchange = (e) => { settings.formatOnSave = (e.target as HTMLInputElement).checked; saveSettings(); };
     const cs = document.getElementById('setCleanSave') as HTMLInputElement | null;
     if (cs) cs.onchange = () => { settings.cleanOnSave = cs.checked; saveSettings(); };
@@ -720,7 +744,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   function renderTabs() {
     const t = cur();
     $('#tabs').innerHTML = tabsHere().map(x => `
-      <div class="tab ${t && x.key === t.key ? 'on' : ''} ${x.ref.inactive && x.view === 'source' ? 'inactive' : ''}" role="tab" aria-selected="${!!t && x.key === t.key}" data-act="tab" data-key="${esc(x.key)}" data-ctx="tab" title="${esc(x.ref.name)}${x.ref.desc ? ' · ' + esc(x.ref.desc) : ''}">
+      <div class="tab ${t && x.key === t.key ? 'on' : ''} ${x.ref.inactive && x.view === 'source' ? 'inactive' : ''} ${x.preview ? 'preview' : ''}" role="tab" aria-selected="${!!t && x.key === t.key}" data-act="tab" data-key="${esc(x.key)}" data-ctx="tab" title="${esc(x.ref.name)}${x.ref.desc ? ' · ' + esc(x.ref.desc) : ''}">
         ${tabGlyph(x)}<span class="tname">${esc(tabName(x))}</span>
         ${x.lock ? `<span class="tlock" title="Locked by you">${ic('lock')}</span>` : ''}
         <button class="tclose ${isDirty(x) ? 'dirty' : ''}" data-act="close" data-key="${esc(x.key)}" title="${isDirty(x) ? 'Unsaved changes. Close' : 'Close'}" aria-label="Close ${esc(x.ref.name)}">${ic('close')}</button>
@@ -744,6 +768,11 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   function renderSubtabs() {
     const t = cur();
     const el = $('#subtabs');
+    if (isForm(t)) {
+      el.hidden = false;
+      el.innerHTML = `<button class="${!t!.raw ? 'on' : ''}" data-act="xml-mode" data-id="form">Form</button><button class="${t!.raw ? 'on' : ''}" data-act="xml-mode" data-id="xml">XML${incDirty(t!, 'main') ? '<i class="ddot"></i>' : ''}</button>`;
+      return;
+    }
     if (!t || t.view !== 'source' || t.ref.type !== 'CLAS') { el.hidden = true; return; }
     el.hidden = false;
     el.innerHTML = backend.includesOf('CLAS').map(inc => `<button class="${inc === t.include ? 'on' : ''}" data-act="inc" data-inc="${inc}">${esc(INCLUDE_LABEL[inc])}${incDirty(t, inc) ? '<i class="ddot"></i>' : ''}</button>`).join('');
@@ -819,7 +848,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       ${S.debug && !S.debug.done ? `<span class="dbg-pill">${ic('bug')}Debugging</span>` : ''}
       <span class="grow"></span>
       <button id="themeStatus" data-act="pick-theme" title="Color theme"></button>
-      ${t && src ? `<span>${t.lock ? ic('lock') + 'Locked' : 'Not locked'}</span><span>Ln ${pos.line + 1}, Col ${pos.ch + 1}</span><span>${isCdsLike(t.ref.type) ? TYPE_INFO[t.ref.type].label : lang}</span><span>${t.ref.inactive ? 'Inactive' : 'Active'}</span>` : `<span>${esc(lang)}</span>`}`;
+      ${t && src && !isSourceType(t.ref.type) ? `<span>${t.lock ? ic('lock') + 'Locked' : 'Not locked'}</span><span>${esc(typeLabel(t.ref))}</span><span>${t.ref.inactive ? 'Inactive' : 'Active'}</span>` : t && src ? `<span>${t.lock ? ic('lock') + 'Locked' : 'Not locked'}</span><span>Ln ${pos.line + 1}, Col ${pos.ch + 1}</span><span>${isCdsLike(t.ref.type) ? TYPE_INFO[t.ref.type].label : lang}</span><span>${t.ref.inactive ? 'Inactive' : 'Active'}</span>` : `<span>${esc(lang)}</span>`}`;
     renderThemeBits();
   }
 
@@ -827,7 +856,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     const t = cur();
     const show = !t;
     $('#welcome').hidden = !show;
-    const paneOn = !!t && t.view !== 'source';
+    const paneOn = !!t && (t.view !== 'source' || (isForm(t) && !t.raw));
     $('#pane').hidden = !paneOn;
     $('#editor').style.visibility = show || paneOn ? 'hidden' : 'visible';
     if (paneOn) renderPane();
@@ -866,6 +895,26 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     const t = cur();
     if (!t) return;
     const pane = $('#pane');
+    if (isForm(t)) {
+      const d = docs.get(docKey(t, 'main'));
+      if (!d) { pane.innerHTML = '<div class="xf"><p class="muted"><i class="spin"></i>Loading</p></div>'; return; }
+      const ro = !!TYPE_INFO[t.ref.type].readOnly || !!t.ref.lockedBy;
+      pane.innerHTML = renderXmlForm(d.getValue(), {
+        readOnly: ro, typeLabel: typeLabel(t.ref),
+        note: TYPE_INFO[t.ref.type].readOnly ? 'Nusa ADT shows this object type read-only. Change it in Eclipse ADT or SAP GUI.'
+          : t.ref.lockedBy ? `Locked by ${t.ref.lockedBy}` : undefined,
+      });
+      const apply = (el: HTMLInputElement | HTMLTextAreaElement) => {
+        const v = el instanceof HTMLInputElement && el.type === 'checkbox' ? String(el.checked) : el.value;
+        try { d.setValue(setXmlValue(d.getValue(), el.dataset.xpath as string, v)); } catch (e) { fail(e); }
+      };
+      pane.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('[data-xpath]').forEach(el => {
+        if (el.tagName === 'BUTTON') return;
+        if (el instanceof HTMLInputElement && el.type === 'checkbox') el.onchange = () => apply(el);
+        else el.oninput = () => apply(el);
+      });
+      return;
+    }
     if (t.view === 'diff') {
       const df = t.diff as DiffState;
       const ops = diffLines(df.left.split('\n'), df.right.split('\n'));
@@ -954,13 +1003,13 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
 
   // ------------------------------------------------------------------ session (open editors per system)
   const saveSession = debounce(() => {
-    const list = tabsHere().filter(t => t.view !== 'diff').map(t => ({ uri: t.ref.uri, name: t.ref.name, type: t.ref.type, pkg: t.ref.pkg, desc: t.ref.desc, include: t.include, view: t.view, entity: t.data?.entity, sql: t.data?.sql }));
+    const list = tabsHere().filter(t => t.view !== 'diff').map(t => ({ preview: t.preview || undefined, uri: t.ref.uri, name: t.ref.name, type: t.ref.type, pkg: t.ref.pkg, desc: t.ref.desc, include: t.include, view: t.view, entity: t.data?.entity, sql: t.data?.sql }));
     const act = cur();
     store.set('nusa-adt-session-' + S.conn, JSON.stringify({ tabs: list, active: act && act.view !== 'diff' ? act.key : null }));
   }, 400);
   async function restoreSession(): Promise<boolean> {
     if (!settings.restoreTabs || tabsHere().length) return false;
-    let saved: { tabs: { uri: string; name: string; type: ObjType; pkg: string; desc: string; include: Include; view: TabView; entity?: string; sql?: string }[]; active: string | null } | null = null;
+    let saved: { tabs: { preview?: boolean; uri: string; name: string; type: ObjType; pkg: string; desc: string; include: Include; view: TabView; entity?: string; sql?: string }[]; active: string | null } | null = null;
     try { saved = JSON.parse(store.get('nusa-adt-session-' + S.conn) || 'null'); } catch { saved = null; }
     if (!saved || !saved.tabs.length) return false;
     for (const s of saved.tabs) {
@@ -968,7 +1017,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
         if (s.view === 'data') openPreview(s.entity, s.sql, false);
         else {
           const st = await backend.state(S.conn, { uri: s.uri, name: s.name, type: s.type, pkg: s.pkg, desc: s.desc });
-          addTab(st, s.include);
+          addTab(st, s.include, !!s.preview);
         }
       } catch { /* the object may be gone */ }
     }
@@ -1014,7 +1063,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     if (!d) {
       const text = await backend.read(t.conn, t.ref, inc, 'inactive');
       if (docs.get(k)) return docs.get(k);
-      d = newDoc(text, isCdsLike(t.ref.type) ? 'cds' : 'abap');
+      d = newDoc(text, isCdsLike(t.ref.type) ? 'cds' : isSourceType(t.ref.type) ? 'abap' : 'text');
       docs.set(k, d);
       base.set(k, text);
       let draft: { at: number; base: string; text: string } | null = null;
@@ -1085,15 +1134,27 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     toast(`Replaced the editor content with the ${df.leftLabel.toLowerCase()}. Save to keep it, or Ctrl+Z to undo.`, 'ok', 6000);
   }
 
-  function addTab(ref: ObjState, inc: Include = 'main'): Tab {
+  function addTab(ref: ObjState, inc: Include = 'main', preview = false): Tab {
     const key = `${S.conn}|${ref.uri}`;
     let t = S.tabs.find(x => x.key === key);
-    if (!t) {
-      t = { key, conn: S.conn, ref, include: inc, view: TYPE_INFO[ref.type].editor === 'form' ? 'binding' : 'source' };
-      S.tabs.push(t);
-    }
+    if (t) { if (!preview) t.preview = false; return t; }
+    t = { key, conn: S.conn, ref, include: inc, view: TYPE_INFO[ref.type].editor === 'form' ? 'binding' : 'source', preview: preview && settings.previewTabs };
+    // a single click replaces the current preview tab, unless it was changed
+    const old = t.preview ? tabsHere().find(x => x.preview && !isDirty(x)) : undefined;
+    if (old) {
+      const at = S.tabs.indexOf(old);
+      dropTab(old);
+      S.tabs.splice(at, 0, t);
+    } else S.tabs.push(t);
     return t;
   }
+  /** Removes a tab without asking (it has no unsaved changes) and releases its lock. */
+  function dropTab(t: Tab) {
+    if (t.lock && t.lock !== 'pending') backend.unlock(t.conn, t.ref, t.lock).catch(() => undefined);
+    if (t.view === 'source') for (const inc of backend.includesOf(t.ref.type)) docs.delete(docKey(t, inc));
+    S.tabs = S.tabs.filter(x => x !== t);
+  }
+  const pin = (t: Tab | undefined) => { if (t && t.preview) { t.preview = false; renderTabs(); } };
 
   async function showTab(t: Tab, inc: Include = t.include, line?: number) {
     hidePop();
@@ -1120,10 +1181,10 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     setTimeout(() => { cm.refresh(); cm.focus(); }, 0);
   }
 
-  async function openObj(ref: ObjRef | ObjState, inc: Include = 'main', line?: number) {
+  async function openObj(ref: ObjRef | ObjState, inc: Include = 'main', line?: number, preview = false) {
     try {
       const st = 'inactive' in ref ? ref as ObjState : await backend.state(S.conn, ref);
-      await showTab(addTab(st, inc), inc, line);
+      await showTab(addTab(st, inc, preview), inc, line);
     } catch (e) { fail(e, `Opening ${ref.name}`); }
   }
 
@@ -1167,6 +1228,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     if (swapping) return;
     const t = curSrc();
     if (!t) return;
+    if (t.preview) { t.preview = false; }
     renderDirty();
     writeDrafts();
     if (!t.lock && !(S.debug && !S.debug.done)) {
@@ -1181,7 +1243,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   const CDS_SLOT = /\b(from|join|on|to|of|as|define|parent|expose|projection\s+on|for)\s$/i;
   cm.on('inputRead', (_cm: CM, ch: { text: string[] }) => {
     const t = curSrc();
-    if (!t || !settings.autoComplete || cm.state.completionActive) return;
+    if (!t || !isSourceType(t.ref.type) || !settings.autoComplete || cm.state.completionActive) return;
     const typed = ch.text.join('');
     if (typed.length > 2) return;                       // paste
     const c = cm.getCursor();
@@ -1267,15 +1329,16 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
 
   async function save(t = curSrc()): Promise<boolean> {
     if (!t || t.view !== 'source') return false;
+    pin(t);
     if (S.debug && !S.debug.done) { toast('Stop the debugger before saving', 'warn'); return false; }
     const incs = backend.includesOf(t.ref.type).filter(inc => incDirty(t, inc));
     if (!incs.length) { toast(`${t.ref.name} has no unsaved changes`); return true; }
-    if (TYPE_INFO[t.ref.type].editor === 'abap' && (settings.cleanOnSave || settings.formatOnSave)) {
+    if ((TYPE_INFO[t.ref.type].editor === 'abap' || (TYPE_INFO[t.ref.type].editor === 'cds' && settings.formatOnSave)) && (settings.cleanOnSave || settings.formatOnSave)) {
       for (const inc of incs) {
         const d = docs.get(docKey(t, inc));
         let text: string = d.getValue();
-        if (settings.cleanOnSave && ext('cleaner')) text = cleanAbap(text, settings.cleanerRules).text;
-        if (settings.formatOnSave) text = await backend.prettyPrint(t.conn, text).catch(() => text);
+        if (settings.cleanOnSave && ext('cleaner') && TYPE_INFO[t.ref.type].editor === 'abap') text = cleanAbap(text, settings.cleanerRules).text;
+        if (settings.formatOnSave) text = await formatText(t, text).catch(() => text);
         if (text !== d.getValue()) {
           if (d === cm.getDoc()) replaceAll(text);
           else d.setValue(text);
@@ -1342,6 +1405,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
 
   async function check() {
     const t = curSrc(); if (!t) return;
+    if (!isSourceType(t.ref.type)) { toast(`${typeLabel(t.ref)}s are checked by the system when you activate them`); return; }
     await busy('Checking syntax', async () => {
       const list = await backend.syntaxCheck(t.conn, t.ref, t.include, cm.getValue());
       setProblems(t.ref.uri, list, t.include);
@@ -1358,13 +1422,23 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     cm.setCursor(pos); cm.scrollTo(scroll.left, scroll.top);
   }
 
+  /** Formats a source the way the settings say: Nusa formatter (offline) or the system's pretty printer. */
+  async function formatText(t: Tab, src: string): Promise<string> {
+    const ed = TYPE_INFO[t.ref.type].editor;
+    if (ed === 'cds') return formatCds(src);
+    if (ed !== 'abap') return src;
+    if (settings.formatter === 'sap' && !conn().builtin && conn().kind !== 'runner') return backend.prettyPrint(t.conn, src);
+    return formatAbap(src, { keywordCase: settings.keywordCase });
+  }
   async function format() {
     const t = curSrc(); if (!t) return;
-    if (TYPE_INFO[t.ref.type].editor !== 'abap') { toast('The pretty printer formats ABAP source. CDS sources keep their layout.'); return; }
+    const ed = TYPE_INFO[t.ref.type].editor;
+    if (ed !== 'abap' && ed !== 'cds') { toast('Nothing to format in this editor'); return; }
     await busy('Formatting', async () => {
       const src = cm.getValue();
-      const out = await backend.prettyPrint(t.conn, src);
-      if (out !== src) { replaceAll(out); toast('Formatted with pretty printer', 'ok', 2000); } else toast('Already formatted', 'info', 2000);
+      const out = await formatText(t, src);
+      if (out !== src) { replaceAll(out); toast(settings.formatter === 'sap' && ed === 'abap' ? 'Formatted with the pretty printer of the system' : 'Formatted. Ctrl+Z undoes it.', 'ok', 2000); }
+      else toast('Already formatted', 'info', 2000);
     });
   }
 
@@ -1423,7 +1497,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   }
 
   function complete() {
-    const t = curSrc(); if (!t) return;
+    const t = curSrc(); if (!t || !isSourceType(t.ref.type)) return;
     startCompletion(cm, async () => {
       const c = cm.getCursor();
       return backend.complete(t.conn, t.ref, t.include, cm.getValue(), c.line, c.ch);
@@ -1431,7 +1505,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   }
 
   async function navigate() {
-    const t = curSrc(); if (!t) return;
+    const t = curSrc(); if (!t || !isSourceType(t.ref.type)) return;
     const c = cm.getCursor();
     const loc = await backend.navigate(t.conn, t.ref, t.include, cm.getValue(), c.line, c.ch).catch(e => { fail(e, 'Navigation'); return null; });
     if (!loc) { toast(`No definition found for "${wordAt(cm)}"`, 'warn'); return; }
@@ -1439,7 +1513,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   }
 
   async function whereUsed() {
-    const t = curSrc(); if (!t) return;
+    const t = curSrc(); if (!t || !isSourceType(t.ref.type)) return;
     const c = cm.getCursor();
     const term = wordAt(cm);
     if (!term) { toast('Place the cursor on a name first', 'warn'); return; }
@@ -1460,7 +1534,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   }
 
   async function elementInfo() {
-    const t = curSrc(); if (!t) return;
+    const t = curSrc(); if (!t || !isSourceType(t.ref.type)) return;
     if (!ext('docs')) { toast('Enable the ABAP Keyword Documentation extension first', 'warn'); return; }
     const c = cm.getCursor();
     const line: string = cm.getLine(c.line);
@@ -1584,9 +1658,16 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   // ------------------------------------------------------------------ create, delete, packages
   const NEW_TYPES: { group: string; types: ObjType[] }[] = [
     { group: 'Source Code', types: ['CLAS', 'INTF', 'PROG'] },
-    { group: 'Dictionary', types: ['TABL'] },
+    { group: 'Dictionary', types: ['TABL', 'DTEL', 'DOMA', 'TTYP'] },
     { group: 'Core Data Services', types: ['DDLS', 'DDLX', 'DCLS', 'BDEF'] },
-    { group: 'Business Services', types: ['SRVD', 'SRVB'] },
+    { group: 'Business Services', types: ['SRVD', 'SRVB', 'HTTP', 'EVTB'] },
+    { group: 'Texts', types: ['MSAG'] },
+    { group: 'Authorizations', types: ['AUTH', 'SUSO', 'SUSH', 'SUCO'] },
+    { group: 'Identity and Access Management', types: ['SIA6', 'SIA1', 'SIA7', 'SIA8', 'SIA9', 'SIA2', 'SIA5', 'SIA3'] },
+    { group: 'Cloud Communication Management', types: ['SCO1', 'SCO2', 'SCO3', 'COTA'] },
+    { group: 'Business Configuration Management', types: ['SMBC'] },
+    { group: 'Application Jobs', types: ['SAJC', 'SAJT'] },
+    { group: 'Others', types: ['NROB', 'APLO'] },
   ];
   async function newObject(pkgPreset?: string, typePreset?: ObjType, refPreset?: string) {
     const c = conn();
@@ -1600,6 +1681,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       <label class="field"><span>Package</span><input id="noPkg" list="noPkgs" value="${esc(defPkg)}" autocomplete="off" spellcheck="false" required><datalist id="noPkgs">${pkgs.map(p => `<option value="${esc(p)}">`).join('')}</datalist></label></div>
       <label class="field"><span>Description</span><input id="noDesc" maxlength="60" required></label>
       <label class="field" id="noRefRow"><span id="noRefLabel">Referenced object</span><input id="noRef" autocomplete="off" spellcheck="false" value="${esc(refPreset || '')}"></label>
+      <p class="note" id="noFormNote" hidden></p>
       <label class="field" id="noBindRow"><span>Binding type</span><select id="noBind"><option value="V4|UI">OData V4 · UI</option><option value="V4|Web API">OData V4 · Web API</option><option value="V2|UI">OData V2 · UI</option><option value="V2|Web API">OData V2 · Web API</option></select></label>
       <p class="form-err" id="noErr" hidden></p>`;
     const REF_LABEL: Partial<Record<ObjType, string>> = { DDLS: 'Data source (table or view)', DDLX: 'Annotated CDS entity', DCLS: 'Protected CDS entity', BDEF: 'Root CDS entity', SRVD: 'CDS entity to expose', SRVB: 'Service definition' };
@@ -1616,6 +1698,9 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
           ($('#noRefRow', root) as HTMLElement).hidden = !REF_LABEL[ty];
           $('#noRefLabel', root).textContent = REF_LABEL[ty] || '';
           ($('#noBindRow', root) as HTMLElement).hidden = ty !== 'SRVB';
+          const note = $('#noFormNote', root) as HTMLElement;
+          note.hidden = info.editor !== 'xml';
+          note.textContent = info.editor === 'xml' ? `You edit the ${info.label.toLowerCase()} in a form after creating it.${c.builtin ? '' : ' Nusa ADT takes the format from an existing object of this type in ' + c.sid + '.'}` : '';
         };
         sync(true);
         typeEl.onchange = () => sync();
@@ -2111,7 +2196,8 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     { id: 'activate', title: 'Activate', key: 'Ctrl+F3', run: () => activate() },
     { id: 'activate-all', title: 'Activate All Inactive Objects', key: 'Ctrl+Shift+F3', run: activateAll },
     { id: 'check', title: 'Check ABAP Syntax', key: 'Ctrl+F2', run: check },
-    { id: 'format', title: 'Format Source (Pretty Printer)', key: 'Shift+F1', run: format },
+    { id: 'format', title: 'Format Document (Pretty Printer)', key: 'Shift+F1', run: format },
+    { id: 'format-vs', title: 'Format Document', key: 'Alt+Shift+F', run: format },
     { id: 'cleanup', title: 'ABAP Cleaner: Clean Up Source', key: 'Ctrl+4', run: cleanUp, when: () => ext('cleaner') },
     { id: 'run', title: 'Run (Program, Console Class or Data Preview)', key: 'F8', run },
     { id: 'run-console', title: 'Run as ABAP Application (Console)', key: 'F9', run },
@@ -2288,6 +2374,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     if (!t) return [];
     const others = tabsHere().filter(x => x.key !== key).map(x => x.key);
     return [
+      ...(t.preview ? [{ label: 'Keep Open', run: () => pin(t) }, { sep: true } as MenuItem] : []),
       { label: 'Close', key: 'Ctrl+W', run: () => closeTab(key) },
       { label: 'Close Others', disabled: !others.length, run: () => closeTabs(others) },
       { label: 'Close All', run: () => closeTabs(tabsHere().map(x => x.key)) },
@@ -2307,12 +2394,20 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       { label: 'Compare With Active Version', run: () => compareActive() },
       { label: 'Compare With Local History…', run: () => compareHistory() },
       { sep: true },
-      ...(abap ? [{ label: 'Format', key: 'Shift+F1', run: format }] : []),
+      { label: 'Format Document', key: 'Shift+Alt+F', run: format },
       ...(abap && ext('cleaner') ? [{ label: 'Clean Up', key: 'Ctrl+4', run: cleanUp }] : []),
       { label: 'Toggle Comment', key: 'Ctrl+/', run: toggleComment },
       ...(abap ? [{ label: 'Toggle Breakpoint', key: 'Ctrl+Shift+B', run: () => toggleBp() }] : []),
     ];
   }
+  // double-click keeps a preview tab open (VS Code: "Keep Open")
+  document.addEventListener('dblclick', (e) => {
+    const target = e.target as HTMLElement;
+    const tab = target.closest('.tab') as HTMLElement | null;
+    if (tab) { pin(S.tabs.find(x => x.key === tab.dataset.key)); return; }
+    const row = target.closest('[data-act="open"],[data-act="open-search"]') as HTMLElement | null;
+    if (row) setTimeout(() => pin(S.tabs.find(x => x.key === `${S.conn}|${row.dataset.uri}`)), 120);
+  });
   document.addEventListener('contextmenu', (e) => {
     const target = e.target as HTMLElement;
     const el = target.closest('[data-ctx]') as HTMLElement | null;
@@ -2371,11 +2466,16 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
         for (const p of Object.keys(pkgCache())) { S.collapsed.add(pkgId(p)); S.openSub.delete(pkgId(p)); }
         S.collapsed.add(`${S.conn}/fav`);
         persistTree(); renderSide(); break;
-      case 'open': { const o = objByUri(d.uri as string) || S.searchRes.find(x => x.uri === d.uri); if (o) await openObj(o); break; }
-      case 'open-search': { const o = S.searchRes.find(x => x.uri === d.uri); if (o) await openObj(o); break; }
+      // single click: preview tab; double click (second click of it): keep the tab open
+      case 'open': { const o = objByUri(d.uri as string) || S.searchRes.find(x => x.uri === d.uri); if (o) await openObj(o, 'main', undefined, el.classList.contains('row') && (e as MouseEvent).detail < 2); break; }
+      case 'open-search': { const o = S.searchRes.find(x => x.uri === d.uri); if (o) await openObj(o, 'main', undefined, (e as MouseEvent).detail < 2); break; }
       case 'goto': await gotoLoc({ uri: d.uri as string, include: d.inc as Include, line: +(d.line as string) }); break;
       case 'goline': { const t = curSrc(); if (t) await showTab(t, t.include, +(d.line as string)); break; }
-      case 'tab': if (!(e.target as HTMLElement).closest('.tclose')) { const t = S.tabs.find(x => x.key === d.key); if (t) await showTab(t); } break;
+      case 'tab': if (!(e.target as HTMLElement).closest('.tclose')) {
+        const t = S.tabs.find(x => x.key === d.key);
+        if (t && (e as MouseEvent).detail >= 2) pin(t);
+        else if (t && t !== cur()) await showTab(t);
+      } break;
       case 'close': e.stopPropagation(); await closeTab(d.key as string); break;
       case 'inc': { const t = curSrc(); if (t) await showTab(t, d.inc as Include); break; }
       case 'panel': S.panel = d.id as PanelTab; S.panelOpen = true; renderPanel(); setTimeout(() => cm.refresh(), 0); break;
@@ -2385,6 +2485,12 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       case 'set-theme': setTheme(d.id as ThemePref); break;
       case 'palette-obj': openPalette('obj'); break;
       case 'switch': await switchConn(d.id as string); break;
+      case 'xml-mode': { const t = cur(); if (t && isForm(t)) { t.raw = d.id === 'xml'; renderAll(); if (t.raw) setTimeout(() => { cm.refresh(); cm.focus(); }, 0); } break; }
+      case 'xf-add': case 'xf-del': {
+        const t = cur(); const doc = t && docs.get(docKey(t, 'main'));
+        if (doc) { try { doc.setValue((d.act === 'xf-add' ? addXmlRow : removeXmlRow)(doc.getValue(), d.xpath as string)); renderPane(); } catch (er) { fail(er); } }
+        break;
+      }
       case 'diag': await showDiag(d.id as string); break;
       case 'diag-copy': await copy(diagText(d.id as string), 'Copied the diagnostics. Passwords and tickets are not included.'); break;
       case 'eclipse': await eclipseGuide(); break;

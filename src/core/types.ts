@@ -1,7 +1,15 @@
 // The contract between the IDE UI and whatever answers it: the mock (prototype),
 // a real SAP system over ADT REST, or the local ABAP runner.
 
-export type ObjType = 'CLAS' | 'INTF' | 'PROG' | 'TABL' | 'DDLS' | 'DDLX' | 'DCLS' | 'BDEF' | 'SRVD' | 'SRVB';
+export type ObjType = 'CLAS' | 'INTF' | 'PROG' | 'TABL' | 'DDLS' | 'DDLX' | 'DCLS' | 'BDEF' | 'SRVD' | 'SRVB'
+  // form-based objects (edited as an XML document, like the form editors in Eclipse)
+  | 'DTEL' | 'DOMA' | 'TTYP' | 'MSAG'
+  | 'AUTH' | 'SUSO' | 'SUSH' | 'SUCO'
+  | 'SIA1' | 'SIA2' | 'SIA3' | 'SIA5' | 'SIA6' | 'SIA7' | 'SIA8' | 'SIA9'
+  | 'SCO1' | 'SCO2' | 'SCO3' | 'COTA'
+  | 'SMBC' | 'SAJC' | 'SAJT' | 'NROB' | 'APLO' | 'HTTP' | 'EVTB'
+  /** any other repository object: shown with the label the system gives it, read-only XML */
+  | 'XOBJ';
 export type Include = 'main' | 'definitions' | 'implementations' | 'testclasses' | 'macros';
 export type Severity = 'error' | 'warning' | 'info';
 /** s4: S/4HANA or NetWeaver on-premise · s4cloud: S/4HANA Cloud Public Edition · btp: BTP ABAP Environment */
@@ -32,7 +40,7 @@ export interface Connection {
 
 export interface PkgRef { name: string; desc: string }
 /** Extra input some object types need on creation. */
-export interface CreateExtra { serviceDefinition?: string; bindingType?: 'V2' | 'V4'; category?: 'UI' | 'Web API'; referencedObject?: string }
+export interface CreateExtra { serviceDefinition?: string; bindingType?: 'V2' | 'V4'; category?: 'UI' | 'Web API'; referencedObject?: string; /** package, for templates that record it */ pkg?: string }
 export interface NewPackage {
   name: string; desc: string; superPackage: string; softwareComponent: string; transportLayer: string;
   packageType: 'development' | 'structure' | 'main';
@@ -64,6 +72,9 @@ export interface ObjRef {
   type: ObjType;
   pkg: string;
   desc: string;
+  /** For XOBJ: the system's type id (FUGR/F) and label (Function Groups). */
+  adtType?: string;
+  typeLabel?: string;
 }
 
 export interface ObjState extends ObjRef {
@@ -184,11 +195,14 @@ export interface Backend {
   debugStop(): Promise<void>;
 }
 
-export type ObjGroup = 'srv' | 'cds' | 'ddic' | 'src';
+export type ObjGroup = 'srv' | 'cds' | 'ddic' | 'src' | 'texts' | 'auth' | 'iam' | 'com' | 'bc' | 'jobs' | 'other';
 export interface TypeInfo {
   label: string; folder: string; group: ObjGroup; glyph: string; adt: string; adtType: string;
-  /** abap: ABAP source · cds: CDS-like source (DDL, BDL, DCL, SRVD, table) · form: no source, a form (service binding) */
-  editor: 'abap' | 'cds' | 'form';
+  /** abap: ABAP source · cds: CDS-like source (DDL, BDL, DCL, SRVD, table) · form: service binding page ·
+   *  xml: form editor over the object's XML document (authorizations, IAM, communication, …) */
+  editor: 'abap' | 'cds' | 'form' | 'xml';
+  /** xml objects that cannot be changed from Nusa ADT */
+  readOnly?: boolean;
   prefix: string;
   maxLen: number;
 }
@@ -203,15 +217,60 @@ export const TYPE_INFO: Record<ObjType, TypeInfo> = {
   BDEF: { label: 'Behavior Definition', folder: 'Behavior Definitions', group: 'cds', glyph: 'B', adt: '/sap/bc/adt/bo/behaviordefinitions/', adtType: 'BDEF/BDO', editor: 'cds', prefix: 'ZR_', maxLen: 30 },
   SRVD: { label: 'Service Definition', folder: 'Service Definitions', group: 'srv', glyph: 'S', adt: '/sap/bc/adt/ddic/srvd/sources/', adtType: 'SRVD/SRV', editor: 'cds', prefix: 'ZUI_', maxLen: 30 },
   SRVB: { label: 'Service Binding', folder: 'Service Bindings', group: 'srv', glyph: 'O', adt: '/sap/bc/adt/businessservices/bindings/', adtType: 'SRVB/SVB', editor: 'form', prefix: 'ZUI_', maxLen: 26 },
+  DTEL: { label: 'Data Element', folder: 'Data Elements', group: 'ddic', glyph: 'E', adt: '/sap/bc/adt/ddic/dataelements/', adtType: 'DTEL/DE', editor: 'xml', prefix: 'Z', maxLen: 30 },
+  DOMA: { label: 'Domain', folder: 'Domains', group: 'ddic', glyph: 'D', adt: '/sap/bc/adt/ddic/domains/', adtType: 'DOMA/DD', editor: 'xml', prefix: 'Z', maxLen: 30 },
+  TTYP: { label: 'Table Type', folder: 'Table Types', group: 'ddic', glyph: 'Y', adt: '/sap/bc/adt/ddic/tabletypes/', adtType: 'TTYP/DA', editor: 'xml', prefix: 'ZTT_', maxLen: 30 },
+  MSAG: { label: 'Message Class', folder: 'Message Classes', group: 'texts', glyph: 'G', adt: '/sap/bc/adt/messageclass/', adtType: 'MSAG/N', editor: 'xml', prefix: 'Z', maxLen: 20 },
+  AUTH: { label: 'Authorization Field', folder: 'Authorization Fields', group: 'auth', glyph: 'F', adt: '', adtType: 'AUTH', editor: 'xml', prefix: 'Z', maxLen: 10 },
+  SUSO: { label: 'Authorization Object', folder: 'Authorization Objects', group: 'auth', glyph: 'A', adt: '', adtType: 'SUSO', editor: 'xml', prefix: 'Z', maxLen: 10 },
+  SUSH: { label: 'Authorization Default Values', folder: 'Authorization Default Values', group: 'auth', glyph: 'H', adt: '', adtType: 'SUSH', editor: 'xml', prefix: 'Z', maxLen: 40 },
+  SUCO: { label: 'Authorization Default Variant', folder: 'Authorization Default Variants', group: 'auth', glyph: 'V', adt: '', adtType: 'SUCO', editor: 'xml', prefix: 'Z', maxLen: 40 },
+  SIA1: { label: 'Business Catalog', folder: 'Business Catalogs', group: 'iam', glyph: 'C', adt: '', adtType: 'SIA1', editor: 'xml', prefix: 'Z', maxLen: 35 },
+  SIA2: { label: 'Restriction Type', folder: 'Restriction Types', group: 'iam', glyph: 'R', adt: '', adtType: 'SIA2', editor: 'xml', prefix: 'Z', maxLen: 30 },
+  SIA3: { label: 'Authorization Object Extension', folder: 'Authorization Object Extensions', group: 'iam', glyph: 'X', adt: '', adtType: 'SIA3', editor: 'xml', prefix: 'Z', maxLen: 30 },
+  SIA5: { label: 'Restriction Field', folder: 'Restriction Fields', group: 'iam', glyph: 'F', adt: '', adtType: 'SIA5', editor: 'xml', prefix: 'Z', maxLen: 30 },
+  SIA6: { label: 'IAM App', folder: 'IAM Apps', group: 'iam', glyph: 'A', adt: '', adtType: 'SIA6', editor: 'xml', prefix: 'Z', maxLen: 36 },
+  SIA7: { label: 'Business Catalog App Assignment', folder: 'Business Catalog App Assignments', group: 'iam', glyph: 'L', adt: '', adtType: 'SIA7', editor: 'xml', prefix: 'Z', maxLen: 40 },
+  SIA8: { label: 'Business Role Template', folder: 'Business Role Templates', group: 'iam', glyph: 'T', adt: '', adtType: 'SIA8', editor: 'xml', prefix: 'Z', maxLen: 30 },
+  SIA9: { label: 'Role Template Catalog Assignment', folder: 'Role Template Catalog Assignments', group: 'iam', glyph: 'L', adt: '', adtType: 'SIA9', editor: 'xml', prefix: 'Z', maxLen: 40 },
+  SCO1: { label: 'Communication Scenario', folder: 'Communication Scenarios', group: 'com', glyph: 'S', adt: '', adtType: 'SCO1', editor: 'xml', prefix: 'Z', maxLen: 30 },
+  SCO2: { label: 'Inbound Service', folder: 'Inbound Services', group: 'com', glyph: 'I', adt: '', adtType: 'SCO2', editor: 'xml', prefix: 'Z', maxLen: 30 },
+  SCO3: { label: 'Outbound Service', folder: 'Outbound Services', group: 'com', glyph: 'O', adt: '', adtType: 'SCO3', editor: 'xml', prefix: 'Z', maxLen: 30 },
+  COTA: { label: 'Connection Target', folder: 'Connection Targets', group: 'com', glyph: 'T', adt: '', adtType: 'COTA', editor: 'xml', prefix: 'Z', maxLen: 30 },
+  SMBC: { label: 'Business Configuration Object', folder: 'Business Configuration Objects', group: 'bc', glyph: 'B', adt: '', adtType: 'SMBC', editor: 'xml', prefix: 'Z', maxLen: 30 },
+  SAJC: { label: 'Application Job Catalog Entry', folder: 'Job Catalog Entries', group: 'jobs', glyph: 'J', adt: '', adtType: 'SAJC', editor: 'xml', prefix: 'Z', maxLen: 40 },
+  SAJT: { label: 'Application Job Template', folder: 'Job Templates', group: 'jobs', glyph: 'J', adt: '', adtType: 'SAJT', editor: 'xml', prefix: 'Z', maxLen: 40 },
+  NROB: { label: 'Number Range Object', folder: 'Number Range Objects', group: 'other', glyph: 'N', adt: '', adtType: 'NROB', editor: 'xml', prefix: 'Z', maxLen: 10 },
+  APLO: { label: 'Application Log Object', folder: 'Application Log Objects', group: 'other', glyph: 'L', adt: '', adtType: 'APLO', editor: 'xml', prefix: 'Z', maxLen: 20 },
+  HTTP: { label: 'HTTP Service', folder: 'HTTP Services', group: 'srv', glyph: 'H', adt: '', adtType: 'HTTP', editor: 'xml', prefix: 'Z', maxLen: 30 },
+  EVTB: { label: 'Event Binding', folder: 'Event Bindings', group: 'srv', glyph: 'E', adt: '', adtType: 'EVTB', editor: 'xml', prefix: 'Z', maxLen: 30 },
+  XOBJ: { label: 'Object', folder: 'Other Objects', group: 'other', glyph: '•', adt: '', adtType: '', editor: 'xml', readOnly: true, prefix: 'Z', maxLen: 40 },
 };
 export const GROUPS: { id: ObjGroup; label: string; types: ObjType[] }[] = [
-  { id: 'srv', label: 'Business Services', types: ['SRVD', 'SRVB'] },
+  { id: 'srv', label: 'Business Services', types: ['SRVD', 'SRVB', 'HTTP', 'EVTB'] },
   { id: 'cds', label: 'Core Data Services', types: ['DDLS', 'BDEF', 'DDLX', 'DCLS'] },
-  { id: 'ddic', label: 'Dictionary', types: ['TABL'] },
+  { id: 'ddic', label: 'Dictionary', types: ['TABL', 'DTEL', 'DOMA', 'TTYP'] },
   { id: 'src', label: 'Source Code Library', types: ['CLAS', 'INTF', 'PROG'] },
+  { id: 'texts', label: 'Texts', types: ['MSAG'] },
+  { id: 'auth', label: 'Authorizations', types: ['AUTH', 'SUSO', 'SUSH', 'SUCO'] },
+  { id: 'iam', label: 'Identity and Access Management', types: ['SIA6', 'SIA1', 'SIA7', 'SIA8', 'SIA9', 'SIA2', 'SIA5', 'SIA3'] },
+  { id: 'com', label: 'Cloud Communication Management', types: ['SCO1', 'SCO2', 'SCO3', 'COTA'] },
+  { id: 'bc', label: 'Business Configuration Management', types: ['SMBC'] },
+  { id: 'jobs', label: 'Application Jobs', types: ['SAJC', 'SAJT'] },
+  { id: 'other', label: 'Others', types: ['NROB', 'APLO', 'XOBJ'] },
 ];
 /** ADT type id (CLAS/OC) to our type */
-export const ADT_TYPE: Record<string, ObjType> = Object.fromEntries(Object.entries(TYPE_INFO).map(([k, v]) => [v.adtType, k as ObjType]));
+export const ADT_TYPE: Record<string, ObjType> = Object.fromEntries(Object.entries(TYPE_INFO).filter(([, v]) => v.adtType).map(([k, v]) => [v.adtType, k as ObjType]));
+/** Our type for an ADT type id: exact (CLAS/OC), then by its main type (SIA6/…), else XOBJ. */
+export function adtTypeOf(raw: string): ObjType {
+  if (!raw) return 'XOBJ';
+  if (ADT_TYPE[raw]) return ADT_TYPE[raw];
+  const main = raw.split('/')[0].toUpperCase();
+  if (main !== 'XOBJ' && main in TYPE_INFO) return main as ObjType;
+  return 'XOBJ';
+}
+/** Types that are edited as source text (all others are forms). */
+export const isSourceType = (t: ObjType) => TYPE_INFO[t].editor === 'abap' || TYPE_INFO[t].editor === 'cds';
 export const isCdsLike = (t: ObjType) => TYPE_INFO[t].editor === 'cds';
 
 export const INCLUDE_LABEL: Record<Include, string> = {
@@ -220,5 +279,6 @@ export const INCLUDE_LABEL: Record<Include, string> = {
 };
 
 export function uriFor(type: ObjType, name: string): string {
+  if (!TYPE_INFO[type].adt) return `/sap/bc/adt/vit/wb/object_type/${type.toLowerCase()}/object_name/${encodeURIComponent(name.toLowerCase())}`;
   return TYPE_INFO[type].adt + encodeURIComponent(name.toLowerCase());
 }

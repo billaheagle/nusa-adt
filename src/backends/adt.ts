@@ -9,7 +9,7 @@ import { RemoteCatalog } from '../adt/catalog';
 import {
   AtcFinding, Backend, BindingInfo, Breakpoint, Connection, CreateExtra, DebugState, GitRepo, Hit, Include, isCdsLike, Location,
   NewPackage, ObjRef, ObjState, ObjType, PkgRef, PreviewResult, Problem, Proposal, RunResult, StepKind, SystemInfo, Transport,
-  TransportNeed, UnitResult, ValueHelpItem,
+  TransportNeed, TYPE_INFO, isSourceType, UnitResult, ValueHelpItem,
 } from '../core/types';
 
 export interface ConnStore {
@@ -127,7 +127,15 @@ export class AdtBackend implements Backend {
     return this.c(conn).quickSearch(query.trim());
   }
 
+  /** media type of each form-based object's XML, sent back on save */
+  private xmlType = new Map<string, string>();
+
   async read(conn: string, obj: ObjRef, include: Include, version: 'active' | 'inactive') {
+    if (TYPE_INFO[obj.type].editor === 'xml') {
+      const r = await this.c(conn).objectXml(version === 'active' ? `${obj.uri}?version=active` : obj.uri);
+      this.xmlType.set(conn + '|' + obj.uri, r.contentType);
+      return r.xml;
+    }
     try {
       return await this.c(conn).source(sourceUrl(obj.uri, include), version);
     } catch (e) {
@@ -168,6 +176,14 @@ export class AdtBackend implements Backend {
 
   async write(conn: string, obj: ObjRef, include: Include, source: string, lock: string, transport?: string) {
     const cl = this.c(conn);
+    if (TYPE_INFO[obj.type].editor === 'xml') {
+      if (TYPE_INFO[obj.type].readOnly) throw new Error('Nusa ADT shows this object type read-only. Change it in Eclipse ADT or SAP GUI.');
+      const ct = this.xmlType.get(conn + '|' + obj.uri) || (await cl.objectXml(obj.uri)).contentType;
+      await cl.putObjectXml(obj.uri, source, ct, lock, transport);
+      if (transport) this.transportOf.set(conn + '|' + obj.uri, transport);
+      this.inactive.get(conn)?.add(obj.uri);
+      return;
+    }
     const url = sourceUrl(obj.uri, include);
     try {
       await cl.setSource(url, source, lock, transport);
@@ -188,6 +204,7 @@ export class AdtBackend implements Backend {
   }
 
   async syntaxCheck(conn: string, obj: ObjRef, include: Include, source: string): Promise<Problem[]> {
+    if (!isSourceType(obj.type)) return [];
     const msgs = await this.c(conn).syntaxCheck(obj.uri, sourceUrl(obj.uri, include), source);
     return msgs.map(m => {
       const s = m.uri ? splitSourceUrl(m.uri) : { uri: obj.uri, include };
@@ -216,6 +233,7 @@ export class AdtBackend implements Backend {
   private relatedCache = new Map<string, { at: number; src: string[] }>();
 
   async complete(conn: string, obj: ObjRef, include: Include, source: string, line: number, col: number): Promise<Proposal[]> {
+    if (!isSourceType(obj.type)) return [];
     let cat = this.catalogs.get(conn);
     if (!cat) { cat = new RemoteCatalog(this.c(conn)); this.catalogs.set(conn, cat); }
     const related = include === 'main' ? [] : await this.related(conn, obj);

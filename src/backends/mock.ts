@@ -5,12 +5,12 @@
 
 import { analyze, declaredMethods, implementedMethods, lineOf, prettyPrint, statements } from '../core/abap';
 import { Catalog, StdCatalog, WorkspaceCatalog } from '../core/catalog';
-import { template } from '../core/templates';
+import { demoXml, template } from '../core/templates';
 import { completeAbap, completeCds } from '../core/complete';
 import {
   AtcFinding, Backend, BindingInfo, Breakpoint, Connection, CreateExtra, DebugState, DebugVar, GitRepo, Hit, Include, isCdsLike, Location,
   NewPackage, ObjRef, ObjState, ObjType, PkgRef, PreviewResult, Problem, Proposal, RunResult, StepKind, SystemInfo, Transport,
-  TransportNeed, UnitResult, uriFor, ValueHelpItem,
+  TransportNeed, TYPE_INFO, UnitResult, uriFor, ValueHelpItem,
 } from '../core/types';
 
 const wait = (ms = 90) => new Promise(r => setTimeout(r, ms));
@@ -202,7 +202,44 @@ define service ZUI_NUSA_FLIGHT {
 ` };
 SRC.ZUI_NUSA_FLIGHT_O4 = { main: '' };
 
-const PKG_OF: Record<string, string> = { ZUI_NUSA_FLIGHT: 'ZNUSA_FLIGHT_SRV', ZUI_NUSA_FLIGHT_O4: 'ZNUSA_FLIGHT_SRV' };
+// form-based objects of the flight app: authorizations, IAM, communication, configuration
+const IAMPKG = 'ZNUSA_FLIGHT_IAM';
+SRC.ZNUSA_CARRIER_ID = { main: demoXml('DTEL', 'ZNUSA_CARRIER_ID', 'Nusa: airline code', 'ZNUSA_FLIGHT', `<dtel:typeInformation dtel:category="Predefined type" dtel:dataType="CHAR" dtel:length="3" dtel:decimals="0"/>
+  <dtel:fieldLabels>
+    <dtel:label dtel:kind="Short" dtel:length="10" dtel:text="Airline"/>
+    <dtel:label dtel:kind="Medium" dtel:length="20" dtel:text="Airline code"/>
+    <dtel:label dtel:kind="Long" dtel:length="40" dtel:text="Airline code (IATA)"/>
+    <dtel:label dtel:kind="Heading" dtel:length="55" dtel:text="Airline"/>
+  </dtel:fieldLabels>`) };
+SRC.ZNUSA_CARR = { main: demoXml('AUTH', 'ZNUSA_CARR', 'Nusa: airline', IAMPKG, '<auth:general auth:dataElement="ZNUSA_CARRIER_ID" auth:checkTable="/DMO/CARRIER" auth:orgLevel="false"/>') };
+SRC.ZNUSA_FLT = { main: demoXml('SUSO', 'ZNUSA_FLT', 'Nusa: flights by airline', IAMPKG, `<suso:general suso:objectClass="ZNUS" suso:accessCategory="Read and write"/>
+  <suso:fields>
+    <suso:field suso:name="ZNUSA_CARR"/>
+    <suso:field suso:name="ACTVT"/>
+  </suso:fields>
+  <suso:activities>
+    <suso:activity suso:code="02" suso:text="Change"/>
+    <suso:activity suso:code="03" suso:text="Display"/>
+  </suso:activities>`) };
+SRC.ZNUSA_FLIGHT_APP = { main: demoXml('SIA6', 'ZNUSA_FLIGHT_APP', 'Nusa: manage flights', IAMPKG, `<sia6:general sia6:appType="External App" sia6:launchpadAppId="ZNUSA_FLIGHT_FLP"/>
+  <sia6:services>
+    <sia6:service sia6:type="OData V4" sia6:name="ZUI_NUSA_FLIGHT_O4" sia6:version="0001"/>
+  </sia6:services>
+  <sia6:authorizations>
+    <sia6:authorization sia6:object="ZNUSA_FLT" sia6:field="ACTVT" sia6:value="02, 03"/>
+    <sia6:authorization sia6:object="ZNUSA_FLT" sia6:field="ZNUSA_CARR" sia6:value="*"/>
+  </sia6:authorizations>`) };
+SRC.ZNUSA_FLIGHT_CS = { main: demoXml('SCO1', 'ZNUSA_FLIGHT_CS', 'Nusa: flight data for partners', IAMPKG, `<sco1:general sco1:scenarioType="Customer managed" sco1:allowedInstances="One instance per scenario and communication system"/>
+  <sco1:inbound sco1:basicAuthentication="true" sco1:x509="true" sco1:oauth="false">
+    <sco1:service sco1:name="ZUI_NUSA_FLIGHT_O4_IWSG" sco1:type="OData V4"/>
+  </sco1:inbound>
+  <sco1:outbound/>`) };
+SRC.ZNUSA_CARRIER_BC = { main: demoXml('SMBC', 'ZNUSA_CARRIER_BC', 'Nusa: airline settings', IAMPKG, '<smbc:general smbc:configurationType="Table maintenance" smbc:serviceBinding="ZUI_NUSA_FLIGHT_O4" smbc:serviceName="ZUI_NUSA_FLIGHT" smbc:entitySet="Carrier" smbc:recordTransport="true"/>') };
+
+const PKG_OF: Record<string, string> = {
+  ZUI_NUSA_FLIGHT: 'ZNUSA_FLIGHT_SRV', ZUI_NUSA_FLIGHT_O4: 'ZNUSA_FLIGHT_SRV',
+  ZNUSA_CARR: IAMPKG, ZNUSA_FLT: IAMPKG, ZNUSA_FLIGHT_APP: IAMPKG, ZNUSA_FLIGHT_CS: IAMPKG, ZNUSA_CARRIER_BC: IAMPKG,
+};
 
 const SAMPLE_DATA: Record<string, Record<string, string | number>[]> = {
   '/DMO/FLIGHT': [
@@ -239,7 +276,14 @@ const DESC: Record<string, [ObjType, string]> = {
   ZNUSA_TRAVEL: ['TABL', 'Nusa: travel'],
   ZUI_NUSA_FLIGHT: ['SRVD', 'Nusa: flight service'],
   ZUI_NUSA_FLIGHT_O4: ['SRVB', 'Nusa: flight service, OData V4 UI'],
+  ZNUSA_CARRIER_ID: ['DTEL', 'Nusa: airline code'],
+  ZNUSA_CARR: ['AUTH', 'Nusa: airline'],
+  ZNUSA_FLT: ['SUSO', 'Nusa: flights by airline'],
+  ZNUSA_FLIGHT_APP: ['SIA6', 'Nusa: manage flights'],
+  ZNUSA_FLIGHT_CS: ['SCO1', 'Nusa: flight data for partners'],
+  ZNUSA_CARRIER_BC: ['SMBC', 'Nusa: airline settings'],
 };
+const FORM_OBJECTS = ['ZNUSA_CARRIER_ID', 'ZNUSA_CARR', 'ZNUSA_FLT', 'ZNUSA_FLIGHT_APP', 'ZNUSA_FLIGHT_CS', 'ZNUSA_CARRIER_BC'];
 
 const CONNS: Connection[] = [
   { id: 's4d', kind: 's4', sid: 'S4D', client: '100', user: 'DEVELOPER', url: 'https://s4d.nusa.internal:44300', language: 'EN', auth: 'basic', abapVersion: 'standard', favoritePackages: ['ZNUSA_FLIGHT'], transports: true, label: 'S/4HANA 2023 on-premise', runReports: true },
@@ -247,8 +291,8 @@ const CONNS: Connection[] = [
   { id: 'loc', kind: 'runner', sid: 'LOCAL', client: '000', user: 'NUSA', url: 'http://localhost:7777', language: 'EN', auth: 'none', abapVersion: 'runner', favoritePackages: ['$TMP'], transports: false, label: 'ABAP runner on this laptop', runReports: true },
 ];
 const CONN_OBJECTS: Record<string, string[]> = {
-  s4d: ['ZCL_NUSA_FLIGHT_SERVICE', 'ZIF_NUSA_LOGGER', 'ZR_NUSA_FLIGHTS', 'ZI_NUSA_FLIGHT', 'ZNUSA_TRAVEL', 'ZUI_NUSA_FLIGHT', 'ZUI_NUSA_FLIGHT_O4'],
-  trl: ['ZCL_NUSA_FLIGHT_SERVICE', 'ZCL_NUSA_CONSOLE', 'ZIF_NUSA_LOGGER', 'ZI_NUSA_FLIGHT', 'ZNUSA_TRAVEL', 'ZUI_NUSA_FLIGHT', 'ZUI_NUSA_FLIGHT_O4'],
+  s4d: ['ZCL_NUSA_FLIGHT_SERVICE', 'ZIF_NUSA_LOGGER', 'ZR_NUSA_FLIGHTS', 'ZI_NUSA_FLIGHT', 'ZNUSA_TRAVEL', 'ZUI_NUSA_FLIGHT', 'ZUI_NUSA_FLIGHT_O4', ...FORM_OBJECTS],
+  trl: ['ZCL_NUSA_FLIGHT_SERVICE', 'ZCL_NUSA_CONSOLE', 'ZIF_NUSA_LOGGER', 'ZI_NUSA_FLIGHT', 'ZNUSA_TRAVEL', 'ZUI_NUSA_FLIGHT', 'ZUI_NUSA_FLIGHT_O4', ...FORM_OBJECTS],
   loc: ['ZCL_NUSA_FLIGHT_SERVICE', 'ZR_NUSA_FLIGHTS'],
 };
 const SEED_TR: Record<string, Transport[]> = {
@@ -271,7 +315,7 @@ interface Persisted {
   pkgs?: Record<string, MPkg[]>; git?: Record<string, GitRepo[]>; favs?: Record<string, string[]>;
 }
 
-const STORE_KEY = 'nusa-adt-mock-v2';
+const STORE_KEY = 'nusa-adt-mock-v3';
 
 export class MockBackend implements Backend {
   readonly id = 'mock';
@@ -299,6 +343,7 @@ export class MockBackend implements Backend {
       this.pkgs[c.id] = c.id === 'loc' ? [] : [
         { name: 'ZNUSA_FLIGHT', desc: 'Nusa: flight demo', parent: '', swc, layer: c.abapVersion === 'cloud' ? '' : 'Z' + c.sid },
         { name: 'ZNUSA_FLIGHT_SRV', desc: 'Nusa: flight OData services', parent: 'ZNUSA_FLIGHT', swc, layer: c.abapVersion === 'cloud' ? '' : 'Z' + c.sid },
+        { name: IAMPKG, desc: 'Nusa: authorizations, apps and communication', parent: 'ZNUSA_FLIGHT', swc, layer: c.abapVersion === 'cloud' ? '' : 'Z' + c.sid },
       ];
       this.git[c.id] = c.id === 'loc' ? [] : [
         { key: '0242AC11000' + c.sid.length, pkg: 'ZNUSA_FLIGHT', url: 'https://github.com/abapnusantara/nusa-flight.git', branch: 'refs/heads/main', createdBy: c.user, status: 'R', statusText: 'Pulled 2026-11-03 21:14' },
@@ -593,7 +638,7 @@ export class MockBackend implements Backend {
     const uri = uriFor(type, name);
     if (this.objs.has(this.key(conn, uri))) throw new Error(`${name} already exists`);
     if (type === 'SRVB' && !extra.serviceDefinition) throw new Error('A service binding needs a service definition');
-    const main = template(type, name, desc, extra);
+    const main = template(type, name, desc, { ...extra, pkg });
     const saved: Partial<Record<Include, string>> = type === 'CLAS'
       ? { main, definitions: SRC.ZCL_NUSA_FLIGHT_SERVICE.definitions, implementations: SRC.ZCL_NUSA_FLIGHT_SERVICE.implementations, testclasses: '' }
       : { main };
@@ -613,6 +658,12 @@ export class MockBackend implements Backend {
     const c = this.conn(conn);
     const at = (line: number, msg: string, sev: Problem['sev'] = 'error'): Problem => ({ sev, msg, uri: o.ref.uri, include, line, source: 'syntax' });
     if (o.ref.type === 'SRVB') return [];
+    if (TYPE_INFO[o.ref.type].editor === 'xml') {
+      // a light well-formedness check, the real check happens on the system
+      const opens = (source.match(/<[A-Za-z]/g) || []).length;
+      const closes = (source.match(/<\/[A-Za-z]|\/>/g) || []).length;
+      return opens === closes ? [] : [at(0, 'The XML document is not well-formed: an element is not closed')];
+    }
     if (isCdsLike(o.ref.type)) {
       const out: Problem[] = [];
       for (const ph of ['data_source_name', 'field_name', 'entity_name', 'table_name', 'element_name', 'authorization_object']) {

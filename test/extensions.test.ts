@@ -112,7 +112,7 @@ test('ADT parsers: packages, value helps, bindings, data preview, abapGit', () =
 test('DEMO backend: packages, new types, publish, data preview, abapGit, delete', async () => {
   const b = new MockBackend();
   const top = await b.packageContents('s4d', 'ZNUSA_FLIGHT');
-  assert.deepEqual(top.packages.map(p => p.name), ['ZNUSA_FLIGHT_SRV']);
+  assert.deepEqual(top.packages.map(p => p.name), ['ZNUSA_FLIGHT_SRV', 'ZNUSA_FLIGHT_IAM']);
   assert.ok(top.objects.some(o => o.type === 'TABL'));
   const srv = await b.packageContents('s4d', 'ZNUSA_FLIGHT_SRV');
   const srvb = srv.objects.find(o => o.type === 'SRVB')!;
@@ -180,4 +180,104 @@ test('diagnostics never contain secrets', () => {
   assert.match(r, /System: S4H/);
   assert.doesNotMatch(r, /Empty/);
   assert.match(r, /401 12 ms ICFLOGONREQUIRED/);
+});
+
+import { formatAbap, formatCds } from '../src/core/format';
+import { readFileSync, readdirSync } from 'node:fs';
+const UNFORMATTED = `class zcl_x definition public final create public.
+public section.
+methods run importing iv_a type i
+iv_b type i optional
+returning value(rv) type string.
+private section.
+data: mv type i,
+mv2 type string.
+endclass.
+class zcl_x implementation.
+method run.
+data(lt) = value string_table( ( |a{ iv_a }| )
+( |b| ) ).
+if iv_a > 1. " trailing
+loop at lt into data(ls).
+case ls.
+when 'a'.
+rv = ls.
+when others.
+clear rv.
+endcase.
+endloop.
+else.
+select carrid from /dmo/flight
+where carrid = 'AA'
+into table @data(flights).
+endif.
+" before end
+endmethod.
+endclass.`;
+const codeOnly = (s: string) => s.replace(/\s+/g, '').toLowerCase();
+test('ABAP formatter: indents blocks, aligns declarations, never changes code', () => {
+  const out = formatAbap(UNFORMATTED);
+  assert.equal(codeOnly(out), codeOnly(UNFORMATTED));
+  assert.equal(formatAbap(out), out, 'idempotent');
+  const l = out.split('\n');
+  assert.equal(l[3], '                          iv_b TYPE i OPTIONAL');
+  assert.equal(l[4], '                RETURNING VALUE(rv) TYPE string.');
+  assert.equal(l[7], '          mv2 TYPE string.');
+  assert.equal(l[12], '                                   ( |b| ) ).');
+  assert.match(out, /\n {8}CASE ls\.\n {10}WHEN 'a'\.\n {12}rv = ls\./);
+  assert.match(out, /\n {4}" before end\n {2}ENDMETHOD\./);
+  assert.match(out, /\|a\{ iv_a \}\|/, 'string templates untouched');
+  assert.equal(formatAbap('if a = 1.\nwrite a.\nendif.', { keywordCase: 'lower' }), 'if a = 1.\n  write a.\nendif.');
+});
+test('formatters keep every token of the sample sources', () => {
+  const dir = 'src/backends';
+  const src = readFileSync(`${dir}/mock.ts`, 'utf8');
+  const blocks = [...src.matchAll(/`((?:CLASS|REPORT|INTERFACE)[\s\S]*?)`/g)].map(m => m[1]).filter(b => !b.includes('${'));
+  assert.ok(blocks.length > 0);
+  for (const b of blocks) {
+    const f = formatAbap(b);
+    assert.equal(codeOnly(f), codeOnly(b));
+    assert.equal(formatAbap(f), f);
+  }
+  void readdirSync;
+});
+test('CDS formatter: braces, brackets and the select header', () => {
+  const out = formatCds("define view entity ZI_X as select from t\nassociation [0..1] to ZI_Y as _Y on _Y.id = id\n{\nkey id as Id,\n@UI.lineItem: [ { position: 10,\nlabel: 'a { b' } ]\nname as Name\n}");
+  assert.equal(out, "define view entity ZI_X as select from t\n  association [0..1] to ZI_Y as _Y on _Y.id = id\n{\n  key id as Id,\n  @UI.lineItem: [ { position: 10,\n      label: 'a { b' } ]\n  name as Name\n}");
+  assert.equal(formatCds(out), out);
+});
+
+import { adtTypeOf } from '../src/core/types';
+import { newObjectXml, parseNodeStructure } from '../src/adt/client';
+test('object types: Eclipse families, unknown types kept with the system label', () => {
+  assert.equal(adtTypeOf('CLAS/OC'), 'CLAS');
+  assert.equal(adtTypeOf('SIA6/XYZ'), 'SIA6');
+  assert.equal(adtTypeOf('SCO1'), 'SCO1');
+  assert.equal(adtTypeOf('FUGR/F'), 'XOBJ');
+  const body = `<asx:abap xmlns:asx="http://www.sap.com/abapxml"><asx:values><DATA><TREE_CONTENT>
+<SEU_ADT_REPOSITORY_OBJ_NODE><OBJECT_TYPE>SIA6/ABC</OBJECT_TYPE><OBJECT_NAME>ZAPP</OBJECT_NAME><OBJECT_URI>/sap/bc/adt/x/sia6/zapp</OBJECT_URI><DESCRIPTION>App</DESCRIPTION></SEU_ADT_REPOSITORY_OBJ_NODE>
+<SEU_ADT_REPOSITORY_OBJ_NODE><OBJECT_TYPE>FUGR/F</OBJECT_TYPE><OBJECT_NAME>ZFG</OBJECT_NAME><OBJECT_URI>/sap/bc/adt/functions/groups/zfg</OBJECT_URI><DESCRIPTION>FG</DESCRIPTION></SEU_ADT_REPOSITORY_OBJ_NODE>
+</TREE_CONTENT><OBJECT_TYPES><SEU_ADT_OBJECT_TYPE_INFO><OBJECT_TYPE>FUGR/F</OBJECT_TYPE><OBJECT_TYPE_LABEL>Function Groups</OBJECT_TYPE_LABEL></SEU_ADT_OBJECT_TYPE_INFO></OBJECT_TYPES></DATA></asx:values></asx:abap>`;
+  const r = parseNodeStructure(body, 'ZP');
+  assert.deepEqual(r.objects.map(o => [o.name, o.type, o.typeLabel]), [['ZAPP', 'SIA6', undefined], ['ZFG', 'XOBJ', 'Function Groups']]);
+});
+test('new form-based objects copy the format of an existing one', () => {
+  const ex = `<?xml version="1.0" encoding="utf-8"?><iam:app xmlns:iam="http://www.sap.com/iam/app" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="SAP_APP" adtcore:type="SIA6/EXT" adtcore:masterLanguage="DE" adtcore:description="x"><adtcore:packageRef adtcore:name="SAPPKG"/><iam:services/></iam:app>`;
+  const x = newObjectXml(ex, { name: 'zmy_app', desc: 'Mine & yours', pkg: 'zpkg', user: 'dev' });
+  assert.equal(x, '<?xml version="1.0" encoding="UTF-8"?><iam:app xmlns:iam="http://www.sap.com/iam/app" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="ZMY_APP" adtcore:description="Mine &amp; yours" adtcore:type="SIA6/EXT" adtcore:masterLanguage="DE" adtcore:responsible="DEV"><adtcore:packageRef adtcore:name="ZPKG"/></iam:app>');
+});
+test('DEMO form objects: read, change, save, activate', async () => {
+  const b = new MockBackend();
+  const iam = await b.packageContents('s4d', 'ZNUSA_FLIGHT_IAM');
+  assert.deepEqual(iam.objects.map(o => o.type).sort(), ['AUTH', 'SCO1', 'SIA6', 'SMBC', 'SUSO']);
+  const app = iam.objects.find(o => o.type === 'SIA6')!;
+  const xml = await b.read('s4d', app, 'main', 'inactive');
+  assert.match(xml, /ZUI_NUSA_FLIGHT_O4/);
+  const lock = await b.lock('s4d', app);
+  await b.write('s4d', app, 'main', xml.replace('02, 03', '03'), lock, 'S4DK900123');
+  assert.equal((await b.syntaxCheck('s4d', app, 'main', '<a><b></a>')).length, 1);
+  const act = await b.activate('s4d', [app]);
+  assert.ok(act.ok);
+  const created = await b.createObject('s4d', 'SCO2', 'ZNUSA_IN', 'Inbound', 'ZNUSA_FLIGHT_IAM', 'S4DK900123');
+  assert.match(await b.read('s4d', created, 'main', 'inactive'), /adtcore:name="ZNUSA_IN"/);
 });

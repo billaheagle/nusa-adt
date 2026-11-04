@@ -31,7 +31,7 @@ await page.route('**/*', r => {
 await page.goto('http://app.test/');
 await page.waitForSelector('.tab.on');
 const results = [];
-const step = async (name, fn) => { try { await fn(); results.push(['ok', name]); } catch (e) { results.push(['FAIL', name, e.message.split('\n')[0]]); } };
+const step = async (name, fn) => { try { await fn(); results.push(['ok', name]); } catch (e) { results.push(['FAIL', name, process.env.FULLERR ? e.message : e.message.split('\n')[0]]); } };
 const cm = () => page.evaluateHandle(() => document.querySelector('.CodeMirror').CodeMirror);
 const hints = () => page.$$eval('.CodeMirror-hints .hint-label', e => e.map(x => x.textContent));
 const shot = n => page.screenshot({ path: `${shots}/${n}.png` });
@@ -316,6 +316,81 @@ await step('Eclipse guide and connection log', async () => {
   if (!/Nusa ADT diagnostics/.test(await page.textContent('.modal pre.diag'))) throw new Error('log text');
   await page.click('.modal button:has-text("Close")');
   await page.waitForSelector('#modal', { state: 'hidden' });
+});
+
+const explorer = async () => {
+  const open = await page.evaluate(() => !document.querySelector('#app').classList.contains('side-closed') && document.querySelector('#sideTitle')?.textContent === 'Project Explorer' && document.querySelector('#sideBody').offsetWidth > 0);
+  if (!open) await page.click('[data-view="explorer"]');
+  await page.waitForFunction(() => document.querySelector('#sideTitle')?.textContent === 'Project Explorer' && document.querySelector('#sideBody').offsetWidth > 0);
+};
+await step('preview tabs: single click reuses the tab, editing keeps it', async () => {
+  await explorer();
+  const before = (await page.$$('.tab')).length;
+  await page.click('.row >> text=ZIF_NUSA_LOGGER');
+  await page.waitForSelector('.tab.on.preview >> text=ZIF_NUSA_LOGGER');
+  await page.click('.row.leaf >> text=ZNUSA_TRAVEL');
+  await page.waitForSelector('.tab.on.preview >> text=ZNUSA_TRAVEL');
+  if (await page.$('.tab >> text=ZIF_NUSA_LOGGER')) throw new Error('preview tab was not replaced');
+  if ((await page.$$('.tab')).length > before + 1) throw new Error('tab count');
+  await page.evaluate(() => { const c = document.querySelector('.CodeMirror').CodeMirror; c.replaceRange(' ', { line: 0, ch: 0 }); });
+  await page.waitForFunction(() => !document.querySelector('.tab.on').classList.contains('preview'));
+  await page.click('.row >> text=ZIF_NUSA_LOGGER');
+  await page.waitForSelector('.tab.on.preview >> text=ZIF_NUSA_LOGGER');
+  if (!(await page.$('.tab >> text=ZNUSA_TRAVEL'))) throw new Error('edited tab was replaced');
+  await page.dblclick('.tab.on');
+  await page.waitForFunction(() => !document.querySelector('.tab.on').classList.contains('preview'));
+  await page.click('.tab >> text=ZNUSA_TRAVEL');
+  await page.keyboard.press('Control+z');
+});
+
+await step('format document: indentation and aligned parameters (Shift+Alt+F)', async () => {
+  await page.click('.tab >> text=ZCL_NUSA_FLIGHT_SERVICE');
+  await page.waitForSelector('.tab.on >> text=ZCL_NUSA_FLIGHT_SERVICE');
+  const h = await cm();
+  const orig = await page.evaluate(c => c.getValue(), h);
+  await page.evaluate(c => { c.setValue(c.getValue().split('\n').map(l => l.trimStart()).join('\n')); c.focus(); }, h);
+  await page.keyboard.press('Shift+Alt+F');
+  await page.waitForSelector('.toast >> text=Formatted');
+  const v = await page.evaluate(c => c.getValue(), h);
+  if (!/\n  PUBLIC SECTION\.\n/.test(v) || !/\n    METHODS get_flights\n/.test(v)) throw new Error('not indented:\n' + v.slice(0, 600));
+  if (v.replace(/\s+/g, '') !== orig.replace(/\s+/g, '')) throw new Error('tokens changed');
+  await page.evaluate((c) => { c.setValue(c.getValue()); }, h);
+  await page.evaluate((c) => { while (c.historySize().undo) c.undo(); }, h);
+});
+
+await step('form objects: IAM app opens as a form, edit, add a row, XML view, save', async () => {
+  await explorer();
+  await page.click('.row >> text=ZNUSA_FLIGHT_IAM');
+  await page.waitForSelector('.row >> text=Identity and Access Management');
+  for (const f of ['Authorizations', 'Cloud Communication Management', 'Business Configuration Management']) await page.waitForSelector(`.row >> text=${f}`);
+  await page.dblclick('.row.leaf >> text=ZNUSA_FLIGHT_APP');
+  await page.waitForSelector('.xf-head >> text=IAM App').catch(async () => { throw new Error('no form: ' + JSON.stringify(await page.evaluate(() => ({ tabs: [...document.querySelectorAll('.tab')].map(t => t.className + ':' + t.textContent.trim()), pane: document.querySelector('#pane').hidden, html: document.querySelector('#pane').innerHTML.slice(0, 300), rows: [...document.querySelectorAll('#sideBody .row .lbl')].map(x => x.textContent).slice(30, 60) })))); });
+  await shot('13-iam-form');
+  const v = page.locator('.xf-table input[aria-label="Value"]').first();
+  await v.fill('03');
+  await page.waitForSelector('.tab.on .tclose.dirty');
+  const rows = (await page.$$('.xf-sec:has(h3:text-is("Authorizations")) tbody tr')).length;
+  await page.click('.xf-sec:has(h3:text-is("Authorizations")) [data-act="xf-add"]');
+  await page.waitForFunction(n => document.querySelectorAll('.xf-sec h3').length && [...document.querySelectorAll('.xf-sec')].find(s => s.querySelector('h3')?.firstChild?.textContent.trim() === 'Authorizations').querySelectorAll('tbody tr').length === n + 1, rows);
+  await page.click('[data-act="xml-mode"][data-id="xml"]');
+  const xml = await page.evaluate(() => document.querySelector('.CodeMirror').CodeMirror.getValue());
+  if (!/sia6:value="03"/.test(xml)) throw new Error('xml not updated');
+  await page.click('[data-act="xml-mode"][data-id="form"]');
+  await saveNow('ZNUSA_FLIGHT_APP');
+  if (await page.$('.toast.t-error')) throw new Error(await page.textContent('.toast.t-error'));
+});
+
+await step('new communication scenario from the New Object dialog', async () => {
+  await page.click('[data-cmd="new"]');
+  await page.selectOption('#noType', 'SCO1');
+  if (!(await page.isVisible('#noFormNote'))) throw new Error('note');
+  await page.fill('#noName', 'ZNUSA_PARTNER_CS');
+  await page.fill('#noPkg', 'ZNUSA_FLIGHT_IAM');
+  await page.fill('#noDesc', 'Nusa: partner access');
+  await page.click('.modal button[type=submit]');
+  await page.waitForSelector('.modal >> text=Select transport request').then(() => page.click('.modal button[type=submit]')).catch(() => {});
+  await page.waitForSelector('.tab.on >> text=ZNUSA_PARTNER_CS');
+  await page.waitForSelector('.xf-head >> text=Communication Scenario');
 });
 
 await step('phone width has no horizontal overflow', async () => {

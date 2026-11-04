@@ -119,3 +119,37 @@ test('transports: falls back to the search configuration when the user query is 
   assert.deepEqual(list.map(t => t.id), ['ZS3K900007']);
   assert.deepEqual(seen, ['/sap/bc/adt/cts/transportrequests?user', '/sap/bc/adt/cts/transportrequests/searchconfiguration/configurations', '/sap/bc/adt/cts/transportrequests?configUri']);
 });
+
+import { withConfigProperties } from '../src/adt/client';
+test('search configurations: relative links, properties set like Eclipse', () => {
+  const rel = `<configuration:configurations xmlns:configuration="http://www.sap.com/adt/configuration" xmlns:atom="http://www.w3.org/2005/Atom"><atom:link href="/sap/bc/adt/cts/transportrequests/searchconfiguration/configurations" rel="self"/><configuration:configuration configuration:createdBy="CB9980000000"><atom:link href="./0242AC11" rel="self"/></configuration:configuration></configuration:configurations>`;
+  assert.deepEqual(parseConfigLinks(rel), ['/sap/bc/adt/cts/transportrequests/searchconfiguration/configurations/0242AC11']);
+  const cfg = `<configuration:configuration xmlns:configuration="http://www.sap.com/adt/configuration"><configuration:properties><configuration:property key="User"></configuration:property><configuration:property key="Modifiable">false</configuration:property><configuration:property key="Released">false</configuration:property></configuration:properties></configuration:configuration>`;
+  const out = withConfigProperties(cfg, { User: 'CB9980000000', WorkbenchRequests: 'true', Modifiable: 'true' });
+  assert.match(out, /key="User">CB9980000000</);
+  assert.match(out, /key="Modifiable">true</);
+  assert.match(out, /<configuration:property key="WorkbenchRequests">true<\/configuration:property><\/configuration:properties>/);
+  assert.match(out, /key="Released">false</);
+  const same = withConfigProperties(out, { User: 'CB9980000000' });
+  assert.equal(same, out, 'nothing to change → identical, so no PUT');
+  assert.match(withConfigProperties('<c:configuration xmlns:c="x"><c:properties/></c:configuration>', { User: 'U1' }), /<c:properties><c:property key="User">U1<\/c:property><\/c:properties>/);
+});
+
+test('transports: no search configuration yet → one is created, as Eclipse does', async () => {
+  const seen: string[] = [];
+  let created = false;
+  const http = {
+    async request(_c: string, r: { method: string; path: string; body?: string; query?: Record<string, string | undefined>; headers?: Record<string, string> }) {
+      seen.push(`${r.method} ${r.path.replace('/sap/bc/adt/cts/transportrequests', '~')}${r.query?.configUri ? '?configUri' : r.query?.user ? '?user' : ''}${r.headers?.['If-Match'] ? ' if-match' : ''}`);
+      if (r.method === 'POST') { created = true; return { status: 201, headers: {}, body: '' }; }
+      if (r.method === 'PUT') { assert.match(r.body || '', /key="User">CB9980000000</); return { status: 200, headers: {}, body: '' }; }
+      if (r.path.endsWith('/configurations')) return { status: 200, headers: {}, body: created ? '<c:configurations xmlns:c="x" xmlns:atom="http://www.w3.org/2005/Atom"><c:configuration><atom:link href="/sap/bc/adt/cts/transportrequests/searchconfiguration/configurations/7"/></c:configuration></c:configurations>' : '<c:configurations xmlns:c="x"/>' };
+      if (r.path.endsWith('/configurations/7')) return { status: 200, headers: { etag: '"e1"' }, body: '<c:configuration xmlns:c="x"><c:properties><c:property key="User"/></c:properties></c:configuration>' };
+      if (r.query?.configUri) return { status: 200, headers: {}, body: '<tm:root xmlns:tm="t"><tm:workbench><tm:target><tm:modifiable><tm:request tm:number="ZS3K900009" tm:owner="CB9980000000" tm:desc="New"/></tm:modifiable></tm:target></tm:workbench></tm:root>' };
+      return { status: 200, headers: {}, body: '<tm:root xmlns:tm="t"/>' };
+    },
+  };
+  const list = await new AdtClient(http as never, 'c').userTransports('CB9980000000');
+  assert.deepEqual(list.map(t => t.id), ['ZS3K900009']);
+  assert.deepEqual(seen, ['GET ~?user', 'GET ~/searchconfiguration/configurations', 'POST ~/searchconfiguration/configurations', 'GET ~/searchconfiguration/configurations', 'GET ~/searchconfiguration/configurations/7', 'PUT ~/searchconfiguration/configurations/7 if-match', 'GET ~?configUri']);
+});

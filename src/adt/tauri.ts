@@ -24,7 +24,10 @@ export class TauriTransport implements HttpTransport {
       const ms = Math.round(performance.now() - started);
       const err = r.status >= 400 ? ' ' + (r.headers?.['sap-err-id'] || shortBody(r.body)) : '';
       const size = r.body ? ` ${r.body.length < 1024 ? r.body.length + ' B' : (r.body.length / 1024).toFixed(1) + ' kB'}` : '';
-      logDiag(conn, `${what} → ${r.status} ${ms} ms${size}${err}`);
+      // transport lists are small and hold no secrets: keep their answer, so an empty list can be explained
+      const peek = /\/cts\/transportrequests|\/systeminformation/.test(req.path) && r.body && r.status < 400
+        ? ` · ${Object.keys(query).length ? '?' + new URLSearchParams(query).toString() + ' · ' : ''}${r.body.replace(/<\?xml[^>]*\?>/, '').replace(/\s+/g, ' ').trim().slice(0, 900)}` : '';
+      logDiag(conn, `${what} → ${r.status} ${ms} ms${size}${err}${peek}`);
       return r;
     } catch (e) {
       logDiag(conn, `${what} ✕ ${e instanceof Error ? e.message : String(e)}`);

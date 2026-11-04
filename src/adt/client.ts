@@ -339,7 +339,8 @@ export class AdtClient {
     let first: unknown;
     const byUser = await this.transportTree({ user: user || undefined, targets: 'true' }).catch(e => { first = e; return [] as Transport[]; });
     if (byUser.length) return byUser;
-    const configs = await this.transportConfigurations().catch(() => [] as string[]);
+    let configs = await this.transportConfigurations().catch(() => [] as string[]);
+    if (!configs.length && user) configs = await this.createTransportConfiguration(user).catch(() => [] as string[]);
     for (const configUri of configs) {
       const list = await this.transportTree({ targets: 'true', configUri }).catch(() => [] as Transport[]);
       if (list.length) return list;
@@ -357,6 +358,26 @@ export class AdtClient {
   async transportConfigurations(): Promise<string[]> {
     const r = await this.req({ method: 'GET', path: '/sap/bc/adt/cts/transportrequests/searchconfiguration/configurations', accept: 'application/vnd.sap.adt.configurations.v1+xml' });
     return parseConfigLinks(r.body);
+  }
+
+  /**
+   * What Eclipse does the first time its Transport Organizer opens: create a search
+   * configuration (POST without a body), then make sure it lists the user's modifiable
+   * workbench requests. Only the properties it needs are changed; the rest keep SAP's defaults.
+   */
+  async createTransportConfiguration(user: string): Promise<string[]> {
+    const CFG = 'application/vnd.sap.adt.configuration.v1+xml';
+    await this.req({ method: 'POST', path: '/sap/bc/adt/cts/transportrequests/searchconfiguration/configurations', accept: CFG });
+    const links = await this.transportConfigurations();
+    for (const uri of links) {
+      const r = await this.req({ method: 'GET', path: uri, accept: CFG });
+      const xml = withConfigProperties(r.body, { User: user, WorkbenchRequests: 'true', Modifiable: 'true' });
+      const etag = r.headers?.etag || r.headers?.ETag;
+      if (xml !== r.body) {
+        await this.req({ method: 'PUT', path: uri, accept: CFG, contentType: CFG, body: xml, headers: etag ? { 'If-Match': etag } : undefined }).catch(() => undefined);
+      }
+    }
+    return links;
   }
 
   async releaseTransport(id: string, tasks: string[]): Promise<void> {
@@ -542,14 +563,43 @@ export function parseTransportCheck(body: string): TransportCheck {
 }
 
 export function parseConfigLinks(body: string): string[] {
+  const BASE = '/sap/bc/adt/cts/transportrequests/searchconfiguration/configurations';
   const hrefs = new Set<string>();
-  const walk = (el: XEl) => {
-    const h = attr(el, 'href');
-    if (h && /searchconfiguration\/configurations\/./.test(h)) hrefs.add(h.replace(/^https?:\/\/[^/]+/, ''));
-    el.children.forEach(walk);
+  const add = (h: string) => {
+    let p = h.trim().replace(/^https?:\/\/[^/]+/, '');
+    if (!p.startsWith('/')) p = `${BASE}/${p.replace(/^\.\//, '').replace(/^configurations\//, '')}`; // relative link
+    if (p.replace(/\/+$/, '') !== BASE) hrefs.add(p);
   };
-  walk(parseXml(body));
+  const walk = (el: XEl, inConfig: boolean) => {
+    const here = inConfig || el.local === 'configuration';
+    const h = attr(el, 'href');
+    // any link inside a configuration entry, or anything that looks like one
+    if (h && ((here && el.local === 'link') || /searchconfiguration\/configurations\/./.test(h))) add(h);
+    el.children.forEach(c => walk(c, here));
+  };
+  walk(parseXml(body), false);
   return [...hrefs];
+}
+
+/** Sets configuration:property values in a search configuration document, adding missing ones. */
+export function withConfigProperties(xml: string, props: Record<string, string>): string {
+  let out = xml;
+  for (const [k, v] of Object.entries(props)) {
+    const re = new RegExp(`(<([\\w-]+:)?property\\b[^>]*\\bkey="${k}"[^>]*?)(/>|>([^<]*)</([\\w-]+:)?property>)`);
+    const m = re.exec(out);
+    if (m) {
+      if ((m[4] ?? '') === v) continue;
+      const tag = (m[2] || '') + 'property';
+      out = out.replace(re, `${m[1]}>${encode(v)}</${tag}>`);
+    } else {
+      const pm = /<([\w-]+:)?properties\s*\/>|<\/([\w-]+:)?properties>/.exec(out);
+      if (!pm) continue;
+      const pre = pm[1] || pm[2] || '';
+      const el = `<${pre}property key="${k}">${encode(v)}</${pre}property>`;
+      out = pm[0].endsWith('/>') ? out.replace(pm[0], `<${pre}properties>${el}</${pre}properties>`) : out.replace(pm[0], el + pm[0]);
+    }
+  }
+  return out;
 }
 
 export function parseTransportTree(body: string): Transport[] {

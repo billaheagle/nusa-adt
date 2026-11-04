@@ -334,7 +334,7 @@ Nusa Studio is a preview. What has been verified so far:
 |---|---|
 | Workbench UI end to end (DEMO system, real editor) | 30 scenarios, including adding an on-premise system over RFC with a SAProuter route, including the IAM app layout, the data element and domain forms with value help, preview tabs, collapse all, Format Document, the IAM app form and creating a communication scenario; edit, save, activate, completion while typing, packages, new objects, service binding publish, data preview, RAP generator, ABAP Cleaner, abapGit, compare and local history, draft recovery, multi-cursor and line editing, systems, themes, phone width |
 | Desktop shell against an in-memory ADT server | tested: title bar, error pages, save with transport, activate, session restore |
-| ABAP analysis, formatter, cleaner, RAP generator, diff, object types, completion contexts | 64 unit tests; the formatter is checked to keep every token of the sample sources |
+| ABAP analysis, formatter, cleaner, RAP generator, diff, object types, completion contexts | 66 unit tests; the formatter is checked to keep every token of the sample sources |
 | ADT response parsing and edit cycle | tested against recorded payload shapes and an in-memory ADT server |
 | Rust core | compiled and unit-tested by the `rust` job of the workflow before the installers are built |
 | S/4HANA Cloud Public Edition | first checks on a live system: browser logon, package explorer with all object families, class and CDS editing, data element, domain and IAM app forms, service binding and data preview work. Package creation, publishing and abapGit are not checked yet |

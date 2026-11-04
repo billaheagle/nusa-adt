@@ -1,4 +1,4 @@
-# Builds the Nusa ADT installers for Windows, macOS and Linux and attaches them to a
+# Builds the Nusa Studio installers for Windows, macOS and Linux and attaches them to a
 # draft GitHub release. Run it from the Actions tab ("Run workflow") or push a tag v*.
 name: Build desktop app
 
@@ -47,6 +47,12 @@ jobs:
     needs: [test, rust]
     permissions:
       contents: write
+    env:
+      # In-app updates: set the secrets TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+      # and TAURI_UPDATER_PUBKEY (see README, "In-app updates"). Without them the build works the
+      # same and the app only points to new releases.
+      UPDATER_READY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' && secrets.TAURI_UPDATER_PUBKEY != '' }}
+      NUSA_REPO: ${{ github.repository }}
     strategy:
       fail-fast: false
       matrix:
@@ -80,13 +86,31 @@ jobs:
 
       - run: npm install
 
+      - name: Enable in-app updates
+        if: env.UPDATER_READY == 'true'
+        shell: bash
+        env:
+          PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+        run: |
+          node -e '
+            const fs = require("fs"), f = "src-tauri/tauri.conf.json";
+            const c = JSON.parse(fs.readFileSync(f, "utf8"));
+            c.bundle.createUpdaterArtifacts = true;
+            c.plugins = { ...(c.plugins || {}), updater: { pubkey: process.env.PUBKEY.trim(),
+              endpoints: [`https://github.com/${process.env.NUSA_REPO}/releases/latest/download/latest.json`] } };
+            fs.writeFileSync(f, JSON.stringify(c, null, 2));
+            console.log("updater on for", process.env.NUSA_REPO);
+          '
+
       - uses: tauri-apps/tauri-action@v0
         id: tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
-          releaseName: Nusa ADT v__VERSION__
+          releaseName: Nusa Studio v__VERSION__
           releaseBody: |
             Installers for Windows (.msi / -setup.exe), macOS (.dmg) and Linux (.deb).
             Portable, no install needed: Windows *-portable-x64.exe, macOS *-portable-macos.zip, Linux *-portable-x86_64.AppImage.
@@ -94,6 +118,7 @@ jobs:
             macOS needs right-click → Open the first time.
           releaseDraft: true
           prerelease: false
+          includeUpdaterJson: ${{ env.UPDATER_READY == 'true' }}
           args: ${{ matrix.args }}
 
       - name: Package portable build
@@ -104,12 +129,12 @@ jobs:
           mkdir -p portable
           case "${{ runner.os }}" in
             Windows)
-              cp src-tauri/target/release/nusa-adt.exe "portable/Nusa-ADT-${VERSION}-portable-x64.exe" ;;
+              cp src-tauri/target/release/nusa-adt.exe "portable/Nusa-Studio-${VERSION}-portable-x64.exe" ;;
             macOS)
-              ditto -c -k --keepParent "src-tauri/target/universal-apple-darwin/release/bundle/macos/Nusa ADT.app" \
-                "portable/Nusa-ADT-${VERSION}-portable-macos.zip" ;;
+              ditto -c -k --keepParent "src-tauri/target/universal-apple-darwin/release/bundle/macos/Nusa Studio.app" \
+                "portable/Nusa-Studio-${VERSION}-portable-macos.zip" ;;
             Linux)
-              cp src-tauri/target/release/bundle/appimage/*.AppImage "portable/Nusa-ADT-${VERSION}-portable-x86_64.AppImage"
+              cp src-tauri/target/release/bundle/appimage/*.AppImage "portable/Nusa-Studio-${VERSION}-portable-x86_64.AppImage"
               chmod +x portable/*.AppImage ;;
           esac
           ls -la portable

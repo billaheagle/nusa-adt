@@ -277,9 +277,6 @@ export function startCompletion(cm: CM, fetch: () => Promise<Proposal[]>) {
 }
 
 /** Kept for callers with a ready list (tests, one-off popups). */
-export function showProposals(cm: CM, list: Proposal[]) {
-  startCompletion(cm, () => Promise.resolve(list));
-}
 
 export function bpMarker(): HTMLElement {
   const d = document.createElement('div');

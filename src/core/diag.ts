@@ -28,3 +28,25 @@ export function diagReport(info: Record<string, string | undefined>, conn: strin
   const lines = diagEntries(conn).slice(-max).map(e => `${e.at}  ${e.line}`);
   return ['Nusa Studio diagnostics', ...head, '', `Last ${lines.length} requests:`, ...(lines.length ? lines : ['(none)'])].join('\n');
 }
+
+/**
+ * For a public problem report: host names, IP addresses, user names and SAProuter routes
+ * become placeholders. `words` are the values of the system (hosts, user, router string).
+ */
+export function anonymize(s: string, words: (string | undefined)[] = []): string {
+  let out = redact(s);
+  const list = [...new Set(words.filter((w): w is string => !!w && w.trim().length >= 3).map(w => w.trim()))].sort((a, b) => b.length - a.length);
+  for (const w of list) out = out.split(w).join('<hidden>');
+  return out
+    .replace(/\/H\/[^\s]+/g, '/H/<route>')                                          // SAProuter strings
+    .replace(/\b(https?|wss?):\/\/[^/\s:]+/gi, '$1://<host>')                          // URLs
+    .replace(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g, '<ip>')                                  // IPv4
+    .replace(/\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:internal|local|corp|lan|intra|com|net|org|id|co|io|cloud)\b/gi, m => /^(github|sap|ondemand|hana)\./i.test(m) ? m : '<host>');
+}
+
+/** A new GitHub issue with the text filled in. GitHub refuses very long URLs, so the body is cut. */
+export function issueUrl(repo: string, title: string, body: string, max = 6000): { url: string; cut: boolean } {
+  const cut = body.length > max;
+  const text = cut ? body.slice(0, max) + '\n\n… (cut: paste the full diagnostics from the clipboard here)' : body;
+  return { url: `https://github.com/${repo}/issues/new?title=${encodeURIComponent(title)}&body=${encodeURIComponent(text)}`, cut };
+}

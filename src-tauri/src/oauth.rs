@@ -3,6 +3,7 @@
 //! exchange the code for a token. The service key JSON is stored in the keychain.
 
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::Emitter;
@@ -88,14 +89,7 @@ pub async fn login(app: &tauri::AppHandle, key: &str) -> Result<Token, String> {
         urlencode(&uaa.clientid),
         urlencode(&redirect)
     );
-    app.opener()
-        .open_url(auth_url, None::<&str>)
-        .map_err(|e| e.to_string())?;
-
-    let code = tokio::time::timeout(Duration::from_secs(300), wait_for_param(&listener, "code"))
-        .await
-        .map_err(|_| "Login timed out after 5 minutes".to_string())??;
-
+    let code = in_browser(app, auth_url, &listener, "code").await?;
     token(
         &uaa,
         &[
@@ -109,11 +103,19 @@ pub async fn login(app: &tauri::AppHandle, key: &str) -> Result<Token, String> {
 
 static CANCEL: Mutex<Option<tokio::sync::oneshot::Sender<()>>> = Mutex::new(None);
 static LOGON_URL: Mutex<Option<String>> = Mutex::new(None);
+/// Open the logon page in the default browser at once (a setting); otherwise the window
+/// offers Open and Copy link, so the user picks the browser or profile.
+static AUTO_OPEN: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Serialize)]
 struct LogonEvent {
     state: &'static str,
     url: String,
+    opened: bool,
+}
+
+pub fn set_auto_open(on: bool) {
+    AUTO_OPEN.store(on, Ordering::Relaxed);
 }
 
 /// Stops a browser logon that is waiting for the redirect.
@@ -123,7 +125,7 @@ pub fn cancel_logon() {
     }
 }
 
-/// Opens the logon page of the waiting browser logon again.
+/// Opens the logon page of the waiting browser logon (again).
 pub fn reopen_logon(app: &tauri::AppHandle) -> Result<(), String> {
     let url = LOGON_URL
         .lock()
@@ -133,6 +135,45 @@ pub fn reopen_logon(app: &tauri::AppHandle) -> Result<(), String> {
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|e| e.to_string())
+}
+
+/// Shows the logon link in the window (and opens it when the setting says so), then waits
+/// up to five minutes for the redirect to localhost carrying `param`.
+async fn in_browser(
+    app: &tauri::AppHandle,
+    url: String,
+    listener: &TcpListener,
+    param: &str,
+) -> Result<String, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    *CANCEL.lock().unwrap() = Some(tx);
+    *LOGON_URL.lock().unwrap() = Some(url.clone());
+    let opened = AUTO_OPEN.load(Ordering::Relaxed)
+        && app.opener().open_url(url.clone(), None::<&str>).is_ok();
+    let _ = app.emit(
+        "browser-logon",
+        LogonEvent {
+            state: "waiting",
+            url: url.clone(),
+            opened,
+        },
+    );
+    let res = tokio::select! {
+        r = tokio::time::timeout(Duration::from_secs(300), wait_for_param(listener, param)) =>
+            r.map_err(|_| "Browser logon timed out after 5 minutes".to_string()).and_then(|x| x),
+        _ = rx => Err("Browser logon was cancelled".to_string()),
+    };
+    CANCEL.lock().unwrap().take();
+    LOGON_URL.lock().unwrap().take();
+    let _ = app.emit(
+        "browser-logon",
+        LogonEvent {
+            state: "done",
+            url,
+            opened,
+        },
+    );
+    res
 }
 
 /// Browser logon for SAP S/4HANA Cloud Public Edition, SAP BTP ABAP (system URL) and
@@ -163,28 +204,7 @@ pub async fn reentrance_ticket(
     if let Some(l) = language.filter(|l| !l.is_empty()) {
         url.push_str(&format!("&sap-language={}", urlencode(l)));
     }
-    // The window shows the link while it waits, so the user can copy it into another
-    // browser or profile, open it again, or cancel.
-    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-    *CANCEL.lock().unwrap() = Some(tx);
-    *LOGON_URL.lock().unwrap() = Some(url.clone());
-    let _ = app.emit(
-        "browser-logon",
-        LogonEvent {
-            state: "waiting",
-            url: url.clone(),
-        },
-    );
-    let _ = app.opener().open_url(url.clone(), None::<&str>);
-    let res = tokio::select! {
-        r = tokio::time::timeout(Duration::from_secs(300), wait_for_param(&listener, "reentrance-ticket")) =>
-            r.map_err(|_| "Browser logon timed out after 5 minutes".to_string()).and_then(|x| x),
-        _ = rx => Err("Browser logon was cancelled".to_string()),
-    };
-    CANCEL.lock().unwrap().take();
-    LOGON_URL.lock().unwrap().take();
-    let _ = app.emit("browser-logon", LogonEvent { state: "done", url });
-    let ticket = res?;
+    let ticket = in_browser(app, url, &listener, "reentrance-ticket").await?;
     Ok(percent_decode(&ticket))
 }
 

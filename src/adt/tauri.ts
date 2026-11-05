@@ -43,6 +43,14 @@ export class TauriConnStore implements ConnStore {
   resetSession(id: string) { return invoke<void>('reset_session', { id }); }
 }
 
+/** Desktop-only helpers: folder picker, RFC SDK check, SAP GUI. */
+export const desktopTools = {
+  pickFolder: (start?: string) => invoke<string | null>('pick_folder', { start: start || null }),
+  checkSdk: (dir: string) => invoke<string>('rfc_sdk_check', { dir }),
+  detectSdk: () => invoke<string | null>('rfc_sdk_detect'),
+  openSapGui: (conn: Connection, command: string) => invoke<string>('open_sap_gui', { conn, command }),
+};
+
 /** Updates: latest release on GitHub, and installing a signed update in place. */
 export const desktopUpdates = {
   check: () => invoke<{ version: string; current: string; notes: string; url: string; installable: boolean } | null>('check_update'),
@@ -51,10 +59,11 @@ export const desktopUpdates = {
 
 /** Browser logon in the desktop app: the link while it waits, and ways to reopen or cancel it. */
 export const desktopLogon = {
-  listen(cb: (e: { state: 'waiting' | 'done'; url: string }) => void) {
+  listen(cb: (e: { state: 'waiting' | 'done'; url: string; opened?: boolean }) => void) {
     const ev = (window as unknown as { __TAURI__?: { event?: { listen(n: string, f: (e: { payload: unknown }) => void): Promise<unknown> } } }).__TAURI__?.event;
-    ev?.listen('browser-logon', e => cb(e.payload as { state: 'waiting' | 'done'; url: string })).catch(() => undefined);
+    ev?.listen('browser-logon', e => cb(e.payload as { state: 'waiting' | 'done'; url: string; opened?: boolean })).catch(() => undefined);
   },
   cancel() { return invoke<void>('cancel_logon'); },
   reopen() { return invoke<void>('reopen_logon'); },
+  autoOpen(on: boolean) { return invoke<void>('set_logon_auto_open', { on }); },
 };

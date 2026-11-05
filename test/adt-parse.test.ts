@@ -58,7 +58,7 @@ test('transport tree splits modifiable and released', () => {
 </tm:target></tm:workbench></tm:root>`;
   const r = parseTransportTree(body);
   assert.equal(r.length, 2);
-  assert.deepEqual(r[0], { id: 'S4DK900123', desc: 'Nusa: flight load factor', owner: 'DEVELOPER', status: 'modifiable', task: 'S4DK900124', objects: ['R3TR CLAS ZCL_NUSA_FLIGHT_SERVICE'] });
+  assert.deepEqual(r[0], { id: 'S4DK900123', desc: 'Nusa: flight load factor', owner: 'DEVELOPER', status: 'modifiable', task: 'S4DK900124', objects: ['R3TR CLAS ZCL_NUSA_FLIGHT_SERVICE'], category: 'workbench' });
   assert.equal(r[1].status, 'released');
 });
 

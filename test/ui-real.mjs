@@ -31,12 +31,21 @@ await page.route('**/*', r => {
 await page.goto('http://app.test/');
 await page.waitForSelector('.tab.on');
 const results = [];
-const step = async (name, fn) => { try { await fn(); results.push(['ok', name]); } catch (e) { results.push(['FAIL', name, process.env.FULLERR ? e.message : e.message.split('\n')[0]]); } };
+const step = async (name, fn) => {
+  try { await fn(); results.push(['ok', name]); }
+  catch (e) {
+    results.push(['FAIL', name, process.env.FULLERR ? e.message : e.message.split('\n')[0]]);
+    await page.screenshot({ path: `${shots}/FAIL-${results.length}.png` }).catch(() => undefined);
+    // a dialog or the palette left open by the failed step must not break the next ones
+    await page.keyboard.press('Escape').catch(() => undefined); await page.keyboard.press('Escape').catch(() => undefined);
+  }
+};
 const cm = () => page.evaluateHandle(() => document.querySelector('.CodeMirror').CodeMirror);
 const hints = () => page.$$eval('.CodeMirror-hints .hint-label', e => e.map(x => x.textContent));
 const shot = n => page.screenshot({ path: `${shots}/${n}.png` });
 
 await step('starts with sample editors, panel closed, no error toast', async () => {
+  await page.waitForFunction(() => document.querySelectorAll('.tab .tname').length >= 2).catch(() => undefined);
   const tabs = await page.$$eval('.tab .tname', e => e.map(x => x.textContent));
   if (tabs.join() !== 'ZR_NUSA_FLIGHTS,ZCL_NUSA_FLIGHT_SERVICE') throw new Error(tabs.join());
   if (!(await page.$eval('#app', e => e.classList.contains('panel-closed')))) throw new Error('panel open');
@@ -211,6 +220,7 @@ await step('systems: on-premise over RFC like the SAP GUI logon pad (SAProuter r
   await page.fill('#sfRouter', '/H/36.92.53.190/S/3299/W/PC/H/10.27.1.2/S/3220');
   await page.dispatchEvent('#sfRouter', 'change');
   if (await page.inputValue('#sfHost') !== '10.27.1.2' || await page.inputValue('#sfSysnr') !== '20' || await page.inputValue('#sfRouter') !== '/H/36.92.53.190/S/3299/W/PC') throw new Error('route not split');
+  await page.fill('#sfSdk', 'C:\\SAP\\nwrfcsdk');
   await page.fill('#sfUser', 'developer');
   await page.click('.modal button[type=submit]');
   await page.waitForSelector('#sfErr >> text=password');
@@ -285,6 +295,8 @@ await step('unsaved changes survive a restart as a draft', async () => {
   await page.click('.toast-act >> text=Show changes');
   await page.waitForSelector('.df-bar >> text=System version');
   await page.click('[data-act="df-edit"]');
+  await page.waitForFunction(() => !document.querySelector('.tab.on')?.textContent.includes('↔') && document.querySelector('.CodeMirror').CodeMirror.getLine(0) === '* draft line');
+  await page.evaluate(() => document.querySelector('.CodeMirror').CodeMirror.focus());
   await page.keyboard.press('Control+z');
   await page.waitForFunction(() => !document.querySelector('.tab.on .tclose.dirty'));
 });
@@ -616,6 +628,148 @@ await step('debugger: grouped variables, other stack frame, change a value', asy
   await page.click('.tab >> text=ZR_NUSA_FLIGHTS');
   await page.evaluate(n => { const c = document.querySelector('.CodeMirror').CodeMirror; c.setCursor({ line: n, ch: 4 }); c.focus(); }, l);
   await page.keyboard.press('Control+Shift+B');
+});
+
+await step('programs list their includes (SE80); transports split like SE09', async () => {
+  await explorer();
+  const prog = page.locator('.prog-node:has(> .row .lbl:text-is("ZR_NUSA_BOOKING"))');
+  await prog.waitFor();
+  await prog.locator('> .twist-btn').click();
+  await prog.locator('.lbl:text-is("ZR_NUSA_BOOKING_TOP")').waitFor();
+  await prog.locator('.lbl:text-is("ZR_NUSA_BOOKING_F01")').waitFor();
+  await shot('36-program-includes');
+  await prog.locator('.lbl:text-is("ZR_NUSA_BOOKING_F01")').click();
+  await page.waitForSelector('.tab.on >> text=ZR_NUSA_BOOKING_F01');
+  if (!/FORM print_bookings/.test(await page.evaluate(() => document.querySelector('.CodeMirror').CodeMirror.getValue()))) throw new Error('include source');
+  await page.click('[data-view="transports"]');
+  await page.waitForSelector('.tr-gh >> text=Workbench requests');
+  await page.waitForSelector('.tr-gh >> text=Customizing requests');
+  if (await page.$('.tr >> text=S4DK900098')) throw new Error('released request on the modifiable tab');
+  await page.click('[data-act="tr-tab"][data-id="released"]');
+  await page.waitForSelector('.tr >> text=S4DK900098');
+  await page.waitForSelector('.tr-gh >> text=Transports of copies');
+  await shot('37-transport-tabs');
+  await page.click('[data-act="tr-tab"][data-id="modifiable"]');
+});
+
+await step('function group with its modules, text elements, message class, profiler, search filters', async () => {
+  await explorer();
+  const fg = page.locator('.prog-node:has(> .row .lbl:text-is("ZNUSA_FG_UTIL"))');
+  await fg.waitFor();
+  await fg.locator('> .twist-btn').click();
+  await fg.locator('.lbl:text-is("Z_NUSA_FORMAT_AMOUNT")').waitFor();
+  await fg.locator('.lbl:text-is("LZNUSA_FG_UTILTOP")').waitFor();
+  await fg.locator('.lbl:text-is("Z_NUSA_GET_CARRIER")').click();
+  await page.waitForSelector('.tab.on >> text=Z_NUSA_GET_CARRIER');
+  if (!/RAISE not_found/.test(await page.evaluate(() => document.querySelector('.CodeMirror').CodeMirror.getValue()))) throw new Error('FM source');
+  await shot('38-function-group');
+  // text elements of a report: their own tabs, saved and checked like SE38
+  await page.click('.tab >> text=ZR_NUSA_FLIGHTS');
+  await page.click('#subtabs [data-inc="symbols"]');
+  await page.waitForFunction(() => /001=Flights and load factor/.test(document.querySelector('.CodeMirror').CodeMirror.getValue()));
+  await page.evaluate(() => { const c = document.querySelector('.CodeMirror').CodeMirror; c.replaceRange('\n@MaxLength:30\n003=Total load\n', { line: c.lineCount() - 1, ch: 0 }); c.focus(); });
+  await saveNow('ZR_NUSA_FLIGHTS');
+  await shot('39-text-symbols');
+  await page.click('#subtabs [data-inc="main"]');
+  // message class as a table, like SE91
+  await page.keyboard.press('Control+Shift+A'); await page.keyboard.type('ZNUSA_MSG'); await page.waitForSelector('#palList li.on >> text=ZNUSA_MSG'); await page.keyboard.press('Enter');
+  await page.waitForSelector('.of-table.msgs >> text=No.');
+  const before = (await page.$$('.of-table.msgs tbody tr')).length;
+  if (before !== 4) throw new Error('messages ' + before);
+  await page.click('[data-act="xf-add-msg"]');
+  await page.waitForFunction(n => document.querySelectorAll('.of-table.msgs tbody tr').length === n + 1, before);
+  const no = await page.$eval('.of-table.msgs tbody tr:last-child input.mono', i => i.value);
+  if (no !== '011') throw new Error('next number ' + no);
+  await page.fill('.of-table.msgs tbody tr:last-child input[maxlength="73"]', 'Seat &1 is taken');
+  await page.dispatchEvent('.of-table.msgs tbody tr:last-child input[maxlength="73"]', 'change');
+  await shot('40-message-class');
+  const xml = await page.evaluate(() => document.querySelector('.CodeMirror').CodeMirror.getValue());
+  if (!/mc:msgno="011" mc:msgtext="Seat &amp;1 is taken"/.test(xml)) throw new Error(xml.slice(0, 900));
+  // profiler: profile the report, then the hit list
+  await page.click('.tab >> text=ZR_NUSA_FLIGHTS');
+  await palette('Profile As ABAP');
+  await page.waitForSelector('.trc-hits >> text=Select /DMO/FLIGHT');
+  await shot('41-profiler');
+  await page.click('[data-act="trc-back"]');
+  await page.waitForSelector('.trc-list li');
+  // search filtered by type and package
+  await page.click('[data-view="search"]');
+  await page.selectOption('#searchType', 'FUNC');
+  await page.waitForSelector('#sideBody .lbl >> text=Z_NUSA_FORMAT_AMOUNT');
+  await page.fill('#searchPkg', 'ZNOPE*');
+  await page.waitForSelector('#sideBody >> text=No objects match');
+  await page.fill('#searchPkg', '');
+  await page.selectOption('#searchType', '');
+});
+
+await step('runtime errors, version history, other system, new function module, problem report', async () => {
+  // runtime errors (ST22): list, own errors only, description in a sandboxed frame, jump to the line
+  await page.click('.tab >> text=ZR_NUSA_FLIGHTS');
+  await page.waitForSelector('.tab.on >> text=ZR_NUSA_FLIGHTS');
+  await palette('Runtime Errors');
+  await page.waitForSelector('.dmp-list >> text=COMPUTE_INT_ZERODIVIDE');
+  if (await page.$('.dmp-list >> text=TIME_OUT')) throw new Error('another user\'s error is shown with "Only DEVELOPER"');
+  await page.uncheck('[data-act="dmp-mine"]');
+  await page.waitForSelector('.dmp-list >> text=TIME_OUT');
+  await page.check('[data-act="dmp-mine"]');
+  await page.click('.dmp-list [data-act="dmp-open"] >> text=COMPUTE_INT_ZERODIVIDE');
+  await page.waitForSelector('iframe.dmp-frame[sandbox=""]');
+  const frameText = await page.frameLocator('iframe.dmp-frame').locator('h2').textContent();
+  if (!/COMPUTE_INT_ZERODIVIDE/.test(frameText)) throw new Error(frameText);
+  await shot('42-runtime-error');
+  const want = +(await page.getAttribute('#panelBody .sumline [data-act="goto"]', 'data-line'));
+  await page.click('#panelBody .sumline [data-act="goto"]');
+  await page.waitForSelector('.tab.on >> text=ZCL_NUSA_FLIGHT_SERVICE');
+  await page.waitForFunction(l => document.querySelector('.CodeMirror').CodeMirror.getCursor().line === l, want);
+  await page.click('[data-act="dmp-back"]');
+  await page.waitForSelector('.dmp-list li');
+  await page.click('.dmp-list [data-act="dmp-open"] >> text=ITAB_LINE_NOT_FOUND');
+  await page.waitForSelector('pre.dmp-text >> text=Runtime Errors');
+  // version history in the system: compare an older version with the editor
+  await palette('Version History in the System');
+  await page.waitForSelector('.modal >> text=Version history');
+  await page.click('.modal [data-rev]:last-child, .modal li:last-child [data-rev]');
+  await page.waitForSelector('.tab.on >> text=↔ Version');
+  await shot('43-version-history');
+  // the same class in another system (TRL has an older copy)
+  await page.click('.tab:not(:has-text("↔")) >> text=ZCL_NUSA_FLIGHT_SERVICE');
+  await page.waitForFunction(() => /ZCL_NUSA_FLIGHT_SERVICE/.test(document.querySelector('.tab.on')?.textContent) && !document.querySelector('.tab.on').textContent.includes('↔') && /CLASS zcl_nusa_flight_service/i.test(document.querySelector('.CodeMirror').CodeMirror.getValue()));
+  await page.waitForTimeout(300);
+  await palette('Compare With: Other System');
+  await page.waitForSelector('.modal [data-sys="trl"]');
+  await page.click('.modal [data-sys="trl"]');
+  await page.waitForSelector('.tab.on >> text=↔ TRL active');
+  await page.waitForSelector('#pane >> text=copy from before the load factor change');
+  await shot('44-compare-other-system');
+  // new function module from the function group's menu: package and URI from the group
+  await explorer();
+  await page.click('.prog-node .row:has(.lbl:text-is("ZNUSA_FG_UTIL"))', { button: 'right' });
+  await page.click('#ctx >> text=New Function Module');
+  await page.waitForSelector('#noRef');
+  if (await page.inputValue('#noRef') !== 'ZNUSA_FG_UTIL') throw new Error('group preset');
+  await page.fill('#noName', 'Z_NUSA_ROUND'); await page.fill('#noDesc', 'Round an amount');
+  await page.click('.modal button[type=submit]');
+  await page.waitForSelector('.modal >> text=Select transport request'); await page.click('.modal button[type=submit]');
+  await page.waitForSelector('.tab.on >> text=Z_NUSA_ROUND');
+  if (!/FUNCTION z_nusa_round/.test(await page.evaluate(() => document.querySelector('.CodeMirror').CodeMirror.getValue()))) throw new Error('FM template');
+  const fgNode = page.locator('.prog-node:has(> .row .lbl:text-is("ZNUSA_FG_UTIL"))');
+  if (await fgNode.evaluate(n => n.classList.contains('closed'))) await fgNode.locator('> .twist-btn').click();
+  await fgNode.locator('.lbl:text-is("Z_NUSA_ROUND")').waitFor();
+  // new function group: name length and the group's own include
+  await page.keyboard.press('Control+n');
+  await page.waitForSelector('#noType');
+  await page.selectOption('#noType', 'FUGR');
+  await page.fill('#noName', 'ZNUSA_FG_NEW'); await page.fill('#noDesc', 'Nusa: new group');
+  await page.click('.modal button[type=submit]');
+  await page.waitForSelector('.modal >> text=Select transport request'); await page.click('.modal button[type=submit]');
+  await page.waitForSelector('.tab.on >> text=ZNUSA_FG_NEW');
+  // problem report: anonymized text, then a GitHub issue link
+  await palette('Report a Problem');
+  await page.waitForSelector('#rpBody');
+  const report = await page.inputValue('#rpBody');
+  if (!/Nusa Studio 0\.3\.0/.test(report) || /s4d\.nusa\.internal/.test(report)) throw new Error(report.slice(0, 600));
+  await shot('45-report-problem');
+  await page.click('.modal .btn:has-text("Cancel")');
 });
 
 await step('phone width has no horizontal overflow', async () => {

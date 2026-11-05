@@ -14,6 +14,10 @@ export class FakeAdtServer implements HttpTransport {
   transports: { id: string; desc: string; objs: string[] }[] = [];
   /** like a release whose request editor ignores object list changes */
   ignoreObjectEdits = false;
+  /** text pools per program (symbols, selections, headings), with their own lock */
+  texts: Record<string, Record<string, string>> = {};
+  private textLock = '';
+  traceRequests: string[] = [];
   // debugger: a listener waits until a class run reaches a breakpoint; the run waits until resumed
   private bps = 0;
   private listener: ((body: string) => void) | null = null;
@@ -34,7 +38,7 @@ export class FakeAdtServer implements HttpTransport {
       const list = this.objs.filter(o => JSON.stringify(o.src) !== JSON.stringify(o.active));
       return this.ok(`<ioc:inactiveObjects xmlns:ioc="http://www.sap.com/abapxml/inactiveCtsObjects" xmlns:adtcore="http://www.sap.com/adt/core">${list.map(o => `<ioc:entry><ioc:object><ioc:ref adtcore:uri="${o.uri}"/></ioc:object></ioc:entry>`).join('')}</ioc:inactiveObjects>`.replace(/ioc:ref/g, 'adtcore:objectReference'));
     }
-    if (p === '/sap/bc/adt/repository/nodestructure') {
+    if (p === '/sap/bc/adt/repository/nodestructure' && q.parent_type !== 'FUGR/F') {
       const list = this.objs.filter(o => o.pkg === q.parent_name);
       return this.ok(`<asx:abap xmlns:asx="http://www.sap.com/abapxml"><asx:values><DATA><TREE_CONTENT>${list.map(o => `<SEU_ADT_REPOSITORY_OBJ_NODE><OBJECT_TYPE>${o.type}</OBJECT_TYPE><OBJECT_NAME>${o.name}</OBJECT_NAME><OBJECT_URI>${o.uri}</OBJECT_URI><DESCRIPTION>${o.desc}</DESCRIPTION></SEU_ADT_REPOSITORY_OBJ_NODE>`).join('')}</TREE_CONTENT></DATA></asx:values></asx:abap>`);
     }
@@ -47,6 +51,31 @@ export class FakeAdtServer implements HttpTransport {
       const desc = (r.body || '').match(/<REQUEST_TEXT>(.*?)<\/REQUEST_TEXT>/)?.[1] || '';
       this.transports.push({ id, desc, objs: [] });
       return this.ok(`/com.sap.cts/object_record/${id}`);
+    }
+    const te = p.match(/^\/sap\/bc\/adt\/textelements\/programs\/([^/]+)(?:\/source\/(\w+))?$/);
+    if (te) {
+      const prog = decodeURIComponent(te[1]).toUpperCase();
+      if (q._action === 'LOCK') { this.textLock = 'T' + Date.now(); return this.ok(`<asx:abap xmlns:asx="http://www.sap.com/abapxml"><asx:values><DATA><LOCK_HANDLE>${this.textLock}</LOCK_HANDLE></DATA></asx:values></asx:abap>`); }
+      if (q._action === 'UNLOCK') { this.textLock = ''; return this.ok(); }
+      const cat = te[2] || '';
+      if (r.method === 'GET') { const v = this.texts[prog]?.[cat]; return v === undefined ? this.ok('', 404) : this.ok(v); }
+      if (r.method === 'PUT') {
+        if (!this.textLock || q.lockHandle !== this.textLock) return this.ok('<exc:exception xmlns:exc="x"><localizedMessage>Text elements are not locked</localizedMessage></exc:exception>', 423);
+        (this.texts[prog] ||= {})[cat] = r.body || '';
+        return this.ok();
+      }
+    }
+    if (p === '/sap/bc/adt/runtime/traces/abaptraces/parameters') return { status: 201, headers: { location: '/sap/bc/adt/runtime/traces/abaptraces/parameters/P1' }, body: '' };
+    if (p === '/sap/bc/adt/runtime/traces/abaptraces/requests') { this.traceRequests.push(`${q.traceUser}|${q.processType}|${q.parametersId}`); return this.ok('<feed/>'); }
+    if (p === '/sap/bc/adt/runtime/traces/abaptraces') {
+      return this.ok(`<atom:feed xmlns:atom="http://www.w3.org/2005/Atom" xmlns:trc="http://www.sap.com/adt/runtime/traces/abaptraces"><atom:entry><atom:id>/sap/bc/adt/runtime/traces/abaptraces/AT1</atom:id><atom:title>ZCL_DEMO console run</atom:title><atom:published>2026-11-05T01:02:03Z</atom:published><trc:extendedData><trc:runtime>12000</trc:runtime><trc:runtimeABAP>3000</trc:runtimeABAP><trc:runtimeDatabase>9000</trc:runtimeDatabase><trc:runtimeSystem>0</trc:runtimeSystem><trc:objectName>ZCL_DEMO</trc:objectName></trc:extendedData></atom:entry></atom:feed>`);
+    }
+    if (p === '/sap/bc/adt/runtime/traces/abaptraces/AT1/hitlist') {
+      return this.ok(`<trc:hitlist xmlns:trc="http://www.sap.com/adt/runtime/traces/abaptraces" xmlns:adtcore="http://www.sap.com/adt/core"><trc:entry trc:index="1" trc:hitCount="2" trc:description="Select ZTAB"><trc:calledProgram trc:context="ZCL_DEMO=====CP"/><trc:callingProgram trc:context="ZCL_DEMO=====CP" adtcore:uri="/sap/bc/adt/oo/classes/zcl_demo/source/main#start=3" adtcore:name="ZCL_DEMO"/><trc:grossTime trc:time="9000" trc:percentage="75"/><trc:traceEventNetTime trc:time="9000" trc:percentage="75"/></trc:entry></trc:hitlist>`);
+    }
+    if (p === '/sap/bc/adt/repository/nodestructure' && q.parent_type === 'FUGR/F') {
+      const fg = String(q.parent_name).toLowerCase();
+      return this.ok(`<asx:abap xmlns:asx="http://www.sap.com/abapxml"><asx:values><DATA><TREE_CONTENT><SEU_ADT_REPOSITORY_OBJ_NODE><OBJECT_TYPE>FUGR/FF</OBJECT_TYPE><OBJECT_NAME>Z_DEMO_FM</OBJECT_NAME><OBJECT_URI>/sap/bc/adt/functions/groups/${fg}/fmodules/z_demo_fm</OBJECT_URI><DESCRIPTION>Demo FM</DESCRIPTION></SEU_ADT_REPOSITORY_OBJ_NODE><SEU_ADT_REPOSITORY_OBJ_NODE><OBJECT_TYPE>FUGR/I</OBJECT_TYPE><OBJECT_NAME>L${fg.toUpperCase()}TOP</OBJECT_NAME><OBJECT_URI>/sap/bc/adt/functions/groups/${fg}/includes/l${fg}top</OBJECT_URI><DESCRIPTION/></SEU_ADT_REPOSITORY_OBJ_NODE></TREE_CONTENT></DATA></asx:values></asx:abap>`);
     }
     if (p === '/sap/bc/adt/quickfixes/evaluation') {
       this.bodies.quickfix = r.body || '';
@@ -129,6 +158,34 @@ export class FakeAdtServer implements HttpTransport {
       return new Promise(res => { this.resume = () => res(out); });
     }
     if (p.startsWith('/nusa/run/programs/')) return this.ok('list output');
+    // runtime errors (ST22): the feed list names the default query, the feed answers with it
+    if (p === '/sap/bc/adt/feeds') return this.ok(`<atom:feed xmlns:atom="http://www.w3.org/2005/Atom" xmlns:af="http://www.sap.com/adt/feeds"><atom:entry><atom:title>Runtime Errors</atom:title><atom:link href="/sap/bc/adt/runtime/dumps"/><af:extendedData><af:queryVariants><af:queryVariant af:queryString="$query=and(equals(user,DEV))" af:isDefault="true"/></af:queryVariants></af:extendedData></atom:entry></atom:feed>`);
+    if (p === '/sap/bc/adt/runtime/dumps') {
+      this.bodies.dumpsQuery = JSON.stringify(q);
+      return this.ok(`<atom:feed xmlns:atom="http://www.w3.org/2005/Atom"><atom:entry><atom:author><atom:name>DEV</atom:name></atom:author><atom:category term="ITAB_LINE_NOT_FOUND" label="ABAP runtime error"/><atom:category term="ZCL_DEMO=====CP" label="Terminated ABAP program"/><atom:id>/sap/bc/adt/runtime/dump/D1</atom:id><atom:link href="/sap/bc/adt/oo/classes/zcl_demo/source/main#start=3" rel="http://www.sap.com/adt/relations/objects"/><atom:title>ITAB_LINE_NOT_FOUND</atom:title><atom:updated>2026-11-05T01:00:00Z</atom:updated></atom:entry></atom:feed>`);
+    }
+    if (p === '/sap/bc/adt/runtime/dump/D1/formatted') return this.ok('Runtime Errors ITAB_LINE_NOT_FOUND\nShort Text: line not found');
+    // version history
+    const ver = p.match(/^(.*)\/source\/main\/versions(\/v1\/content)?$/);
+    if (ver && r.method === 'GET') {
+      if (ver[2]) return this.ok('OLD SOURCE');
+      return this.ok(`<atom:feed xmlns:atom="http://www.w3.org/2005/Atom" xmlns:adtcore="http://www.sap.com/adt/core"><atom:entry><atom:author><atom:name>DEV</atom:name></atom:author><atom:content src="${p}/v1/content" type="text/plain"/><atom:id>00001</atom:id><atom:link href="/sap/bc/adt/cts/transportrequests/NPLK900001" adtcore:name="NPLK900001"/><atom:title>first</atom:title><atom:updated>2026-11-01T00:00:00Z</atom:updated></atom:entry></atom:feed>`);
+    }
+    // function groups and function modules
+    if (r.method === 'POST' && p === '/sap/bc/adt/functions/groups') {
+      this.bodies.fugr = r.body || '';
+      const name = (r.body || '').match(/adtcore:name="([^"]+)"/)?.[1] || '';
+      this.objs.push({ uri: `/sap/bc/adt/functions/groups/${name.toLowerCase()}`, name, type: 'FUGR/F', pkg: (r.body || '').match(/packageRef adtcore:name="([^"]+)"/)?.[1] || '', desc: '', src: { main: '' }, active: {} });
+      return this.ok('', 201);
+    }
+    const fm = p.match(/^\/sap\/bc\/adt\/functions\/groups\/([^/]+)\/fmodules$/);
+    if (fm && r.method === 'POST') {
+      this.bodies.func = r.body || '';
+      if (!this.find(`/sap/bc/adt/functions/groups/${fm[1]}`)) return this.ok('<exc:exception xmlns:exc="x"><localizedMessage>Function group does not exist</localizedMessage></exc:exception>', 404);
+      const name = (r.body || '').match(/adtcore:name="([^"]+)"/)?.[1] || '';
+      this.objs.push({ uri: `/sap/bc/adt/functions/groups/${fm[1]}/fmodules/${name.toLowerCase()}`, name, type: 'FUGR/FF', pkg: '', desc: '', src: { main: '' }, active: {} });
+      return this.ok('', 201);
+    }
     const o = this.find(p);
     if (!o) return this.ok('<exc:exception xmlns:exc="x"><localizedMessage>Resource does not exist</localizedMessage></exc:exception>', 404);
     if (r.method === 'POST' && q._action === 'LOCK') {
@@ -152,7 +209,7 @@ export class FakeAdtServer implements HttpTransport {
     if (p.endsWith('/includes') && r.method === 'POST') { const kind = (r.body || '').match(/includeType="(\w+)"/)?.[1] || ''; o.src[kind] = ''; return this.ok(); }
     if (r.method === 'GET' && p === o.uri) {
       const inactive = JSON.stringify(o.src) !== JSON.stringify(o.active);
-      return this.ok(`<class:abapClass xmlns:class="x" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="${o.name}" adtcore:type="${o.type}" adtcore:description="${o.desc}" adtcore:version="${inactive ? 'inactive' : 'active'}"><adtcore:packageRef adtcore:name="${o.pkg}"/></class:abapClass>`);
+      return this.ok(`<class:abapClass xmlns:class="x" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="${o.name}" adtcore:type="${o.type}" adtcore:description="${o.desc}" adtcore:version="${inactive ? 'inactive' : 'active'}"><adtcore:packageRef adtcore:name="${o.pkg}"/><atom:link xmlns:atom="http://www.w3.org/2005/Atom" href="source/main/versions" rel="http://www.sap.com/adt/relations/versions"/></class:abapClass>`);
     }
     return this.ok('', 405);
   }

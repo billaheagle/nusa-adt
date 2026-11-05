@@ -313,6 +313,7 @@ function layoutSections(doc: Document, lay: Layout, ro: boolean, used: Set<Eleme
     }
     if (b?.kind === 'table') html += layoutTable(doc, b, ro, used, c => { count = c; });
     if (b?.kind === 'auths') html += authsBlock(doc, ro, used, c => { count = c; });
+    if (b?.kind === 'messages') html += messagesBlock(doc, ro, used, c => { count = c; });
     if (html) out.push({ id: `of-sec-${i}`, title: sec.title, help: sec.help, half: sec.half, count, html });
   });
   return out;
@@ -339,6 +340,69 @@ function layoutTable(doc: Document, b: TableDef, ro: boolean, used: Set<Element>
   const add = ro || b.fixedRows ? '' : `<button type="button" class="of-add" data-act="xf-add-row" data-at="${esc(b.at)}" data-row="${esc(rowName)}" data-cols="${esc(b.columns.map(c => c.at).join(','))}" data-num="${esc(b.number || '')}">${PLUS}Add ${esc(b.noun)}</button>`;
   return `<div class="of-table">${rows.length ? `<table><thead><tr>${head}${ro || b.fixedRows ? '' : '<th class="of-row-act"><span class="sr">Actions</span></th>'}</tr></thead><tbody>${body}</tbody></table>` : `<p class="of-none pad">No ${esc(b.noun)}s yet.</p>`}</div>${add}`;
 }
+// ------------------------------------------------------------------ message classes (SE91)
+// Two shapes are known: ADT's <mc:messages mc:msgno mc:msgtext mc:selfexplainatory/> repeated under
+// the root, and <messages><message number text selfExplanatory/></messages>.
+const MSG_KEYS = { no: ['msgno', 'number'], text: ['msgtext', 'text'], self: ['selfexplainatory', 'selfExplanatory', 'selfexplanatory'] };
+const attrOf = (e: Element, names: string[]) => Array.from(e.attributes).find(a => names.includes(a.localName));
+export function messageRows(doc: Document): Element[] {
+  return Array.from(doc.getElementsByTagNameNS('*', '*')).filter(e => (e.localName === 'messages' || e.localName === 'message') && !!attrOf(e, MSG_KEYS.no));
+}
+function messagesBlock(doc: Document, ro: boolean, used: Set<Element>, setCount: (n: number) => void): string {
+  const rows = messageRows(doc);
+  rows.forEach(r => { used.add(r); if (r.parentElement && r.parentElement !== doc.documentElement) used.add(r.parentElement); });
+  setCount(rows.length);
+  const body = rows.map((r, i) => {
+    const rp = indexPath(r);
+    const no = attrOf(r, MSG_KEYS.no), text = attrOf(r, MSG_KEYS.text), self = attrOf(r, MSG_KEYS.self);
+    const t = text?.value ?? '';
+    const noCell = no ? (ro ? `<td class="of-num">${esc(no.value)}</td>` : `<td class="w-xs"><input class="of-cell mono" data-xpath="${esc(`${rp}@${no.name}`)}" value="${esc(no.value)}" maxlength="3" inputmode="numeric" aria-label="Message number"></td>`) : '<td></td>';
+    const textCell = !text ? '<td><span class="of-empty">–</span></td>' : ro ? `<td>${esc(t)}</td>`
+      : `<td><div class="of-counted"><input class="of-cell" data-xpath="${esc(`${rp}@${text.name}`)}" value="${esc(t)}" maxlength="73" aria-label="Message text ${esc(no?.value || '')}"><span class="of-counter ${t.length > 73 ? 'over' : ''}">${t.length} / 73</span></div></td>`;
+    const selfCell = self ? cell(`${rp}@${self.name}`, self.value || 'false', ro, 'Self-explanatory') : '<td></td>';
+    return `<tr>${noCell}${textCell}${selfCell}${ro ? '' : delBtn(rp, i)}</tr>`;
+  }).join('');
+  const head = '<th scope="col" class="w-xs">No.</th><th scope="col">Message text</th><th scope="col" class="w-xs">Self-explanatory</th>';
+  const add = ro ? '' : `<button type="button" class="of-add" data-act="xf-add-msg">${PLUS}Add message</button>`;
+  return `<div class="of-table msgs">${rows.length ? `<table><thead><tr>${head}${ro ? '' : '<th class="of-row-act"><span class="sr">Actions</span></th>'}</tr></thead><tbody>${body}</tbody></table>` : '<p class="of-none pad">No messages yet.</p>'}</div>${add}`;
+}
+
+/** A new message with the next free number. */
+export function addMessageRow(xml: string): string {
+  const doc = parse(xml);
+  const rows = messageRows(doc);
+  const next = String(rows.reduce((m, r) => Math.max(m, parseInt(attrOf(r, MSG_KEYS.no)?.value || '0', 10) || 0), -1) + 1).padStart(3, '0');
+  if (+next > 999) throw new Error('A message class holds at most 1000 messages (000 to 999)');
+  let n: Element;
+  if (rows.length) {
+    const last = rows[rows.length - 1];
+    n = last.cloneNode(false) as Element;           // attributes only, no links of the old message
+    for (const a of Array.from(n.attributes)) {
+      if (MSG_KEYS.no.includes(a.localName)) n.setAttribute(a.name, next);
+      else if (MSG_KEYS.text.includes(a.localName)) n.setAttribute(a.name, '');
+      else if (MSG_KEYS.self.includes(a.localName)) n.setAttribute(a.name, 'false');
+      else if (!a.name.startsWith('xmlns') && !/^(adtcore:)?(name|type)$/.test(a.name)) n.removeAttribute(a.name);
+    }
+    const after = last.nextSibling;
+    last.parentNode!.insertBefore(n, after);
+  } else {
+    const root = doc.documentElement;
+    const ns = root.namespaceURI, p = root.prefix ? root.prefix + ':' : '';
+    if (root.localName === 'messageClass') {
+      n = doc.createElementNS(ns, `${p}messages`);
+      n.setAttributeNS(ns, `${p}msgno`, next); n.setAttributeNS(ns, `${p}msgtext`, ''); n.setAttributeNS(ns, `${p}selfexplainatory`, 'false');
+      root.appendChild(n);
+    } else {
+      let box = Array.from(root.children).find(c => c.localName === 'messages');
+      if (!box) { box = doc.createElementNS(ns, `${p}messages`); root.appendChild(box); }
+      n = doc.createElementNS(ns, `${p}message`);
+      n.setAttributeNS(ns, `${p}number`, next); n.setAttributeNS(ns, `${p}text`, ''); n.setAttributeNS(ns, `${p}selfExplanatory`, 'false');
+      box.appendChild(n);
+    }
+  }
+  return serialize(doc, xml);
+}
+
 /** IAM app authorizations: one block per authorization object, its fields and their values. */
 function authsBlock(doc: Document, ro: boolean, used: Set<Element>, setCount: (n: number) => void): string {
   const auths = Array.from(doc.getElementsByTagNameNS('*', 'auth')).filter(a => a.parentElement?.localName === 'auths');

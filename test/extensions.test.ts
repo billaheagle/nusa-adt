@@ -263,13 +263,13 @@ test('object types: Eclipse families, unknown types kept with the system label',
   assert.equal(adtTypeOf('CLAS/OC'), 'CLAS');
   assert.equal(adtTypeOf('SIA6/XYZ'), 'SIA6');
   assert.equal(adtTypeOf('SCO1'), 'SCO1');
-  assert.equal(adtTypeOf('FUGR/F'), 'XOBJ');
+  assert.equal(adtTypeOf('FUGR/F'), 'FUGR');
   const body = `<asx:abap xmlns:asx="http://www.sap.com/abapxml"><asx:values><DATA><TREE_CONTENT>
 <SEU_ADT_REPOSITORY_OBJ_NODE><OBJECT_TYPE>SIA6/ABC</OBJECT_TYPE><OBJECT_NAME>ZAPP</OBJECT_NAME><OBJECT_URI>/sap/bc/adt/x/sia6/zapp</OBJECT_URI><DESCRIPTION>App</DESCRIPTION></SEU_ADT_REPOSITORY_OBJ_NODE>
 <SEU_ADT_REPOSITORY_OBJ_NODE><OBJECT_TYPE>FUGR/F</OBJECT_TYPE><OBJECT_NAME>ZFG</OBJECT_NAME><OBJECT_URI>/sap/bc/adt/functions/groups/zfg</OBJECT_URI><DESCRIPTION>FG</DESCRIPTION></SEU_ADT_REPOSITORY_OBJ_NODE>
 </TREE_CONTENT><OBJECT_TYPES><SEU_ADT_OBJECT_TYPE_INFO><OBJECT_TYPE>FUGR/F</OBJECT_TYPE><OBJECT_TYPE_LABEL>Function Groups</OBJECT_TYPE_LABEL></SEU_ADT_OBJECT_TYPE_INFO></OBJECT_TYPES></DATA></asx:values></asx:abap>`;
   const r = parseNodeStructure(body, 'ZP');
-  assert.deepEqual(r.objects.map(o => [o.name, o.type, o.typeLabel]), [['ZAPP', 'SIA6', undefined], ['ZFG', 'XOBJ', 'Function Groups']]);
+  assert.deepEqual(r.objects.map(o => [o.name, o.type, o.typeLabel]), [['ZAPP', 'SIA6', undefined], ['ZFG', 'FUGR', undefined]]);
 });
 test('new form-based objects copy the format of an existing one', () => {
   const ex = `<?xml version="1.0" encoding="utf-8"?><iam:app xmlns:iam="http://www.sap.com/iam/app" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="SAP_APP" adtcore:type="SIA6/EXT" adtcore:masterLanguage="DE" adtcore:description="x"><adtcore:packageRef adtcore:name="SAPPKG"/><iam:services/></iam:app>`;

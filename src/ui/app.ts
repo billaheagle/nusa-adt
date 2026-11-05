@@ -2,28 +2,38 @@
 // systems, settings and the built-in extensions. Everything that talks to a system goes
 // through the Backend interface.
 
-import { systemHosts, systemUrl, splitGuiRoute, rfcTarget } from '../core/sysurl';
+import { systemHosts, rfcTarget } from '../core/sysurl';
 import { addSnapshot, diffLines, diffStats, hunks, Snapshot } from '../core/diff';
-import { diagReport, logDiag } from '../core/diag';
+import { anonymize, diagReport, issueUrl, logDiag } from '../core/diag';
+import { createHistory } from './history';
 import { formatAbap, formatCds, KeywordCase } from '../core/format';
-import { addLayoutRow, addXmlRow, layoutEffects, removeXmlRow, renderXmlForm, setXmlValue } from './xmlform';
+import { addLayoutRow, addMessageRow, addXmlRow, layoutEffects, removeXmlRow, renderXmlForm, setXmlValue } from './xmlform';
 import {
   AtcFinding, Backend, BindingInfo, Breakpoint, Connection, CreateExtra, DebugState, DebugVar, GitRepo, GROUPS, Hit, Include,
   INCLUDE_LABEL, isCdsLike, isSourceType, Location, ObjRef, ObjState, ObjType, PkgRef, PreviewResult, Problem, Proposal, RunResult, StepKind,
-  SystemInfo, Transport, TransportNeed, TYPE_INFO, UnitResult, uriFor, QuickFix, RefactorPreview, TextEdit,
+  SystemInfo, Transport, TransportNeed, TYPE_INFO, UnitResult, uriFor, QuickFix, RefactorPreview, TextEdit, isTextInclude, TraceRun, TraceHit, Dump, newObjectUri,
 } from '../core/types';
 import { applyEdits, editLines, sortForApply, wordRange } from '../core/edits';
 import { bpLines, bpMarker, CM, createEditor, deleteLines, duplicateLines, moveLines, newDoc, selectNextOccurrence, startCompletion, wordAt } from './editor';
-import { ic, LOGO, typeIcon } from './icons';
+import { ic, LOGO } from './icons';
 import { cleanAbap, DEFAULT_RULES, RuleId, RULES } from '../core/cleaner';
-import { planRap, rapNames, validateRap } from '../core/rapgen';
+import { planRap } from '../core/rapgen';
 import { keywordDocUrl } from '../core/docs';
 import { outline } from '../core/outline';
 import { template } from '../core/templates';
 import { parseTableSource } from '../core/catalog';
 
+import { systemFormDialog } from './system-form';
+import { rapFormDialog, RapFormResult } from './rap-form';
+import { glyph, trGroupsHtml, trTabsHtml, TrView } from './transports-view';
+import { renderTraces as traceView, renderDumps, ownDumps } from './runtime';
+import { $, esc, debounce, msg, store, json, TAURI, IS_MAC } from './util';
+import { APP_VERSION, REPORT_REPO, AUTH_LABEL, ECLIPSE_POINTS, EXTENSIONS, ExtId, KIND_LABEL, Settings } from './meta';
+import type { LogonBridge, ToolsBridge, UpdateBridge, UpdateInfo } from './bridges';
+export type { LogonBridge, ToolsBridge, UpdateBridge, UpdateInfo } from './bridges';
+
 type View = 'explorer' | 'search' | 'outline' | 'transports' | 'git' | 'debug' | 'extensions' | 'connections' | 'settings';
-type PanelTab = 'problems' | 'output' | 'unit' | 'atc' | 'where';
+type PanelTab = 'problems' | 'output' | 'unit' | 'atc' | 'where' | 'traces' | 'dumps';
 type TabView = 'source' | 'data' | 'binding' | 'diff';
 interface DiffState { left: string; right: string; leftLabel: string; rightLabel: string; srcKey: string; inc: Include; all?: boolean }
 interface DataState { entity?: string; sql: string; rows: number; result?: PreviewResult; error?: string; running?: boolean }
@@ -36,61 +46,12 @@ interface Tab {
   raw?: boolean;
 }
 type PkgData = { packages: PkgRef[]; objects: ObjState[] } | 'loading' | { error: string };
-type ExtId = 'preview' | 'abapgit' | 'cleaner' | 'rapgen' | 'docs' | 'outline';
-interface Settings { editorFont: number; autoComplete: boolean; restoreTabs: boolean; cleanerRules: RuleId[]; ext: Record<ExtId, boolean>; formatOnSave: boolean; cleanOnSave: boolean; keepDrafts: boolean; previewTabs: boolean; formatter: 'nusa' | 'sap'; keywordCase: KeywordCase; checkUpdates: boolean }
-const APP_VERSION = '0.3.0';
 
-const EXTENSIONS: { id: ExtId; name: string; icon: string; desc: string; keys: string }[] = [
-  { id: 'preview', name: 'Data Preview & SQL Console', icon: 'grid', desc: 'Browse the content of database tables and CDS views and run ABAP SQL, like F8 on a table in Eclipse.', keys: 'F8 on a table or CDS view · Ctrl+Enter runs the query' },
-  { id: 'abapgit', name: 'abapGit Repositories', icon: 'git', desc: 'Link packages to Git repositories and pull them through the ADT abapGit service (SAP BTP, S/4HANA Cloud and recent on-premise releases).', keys: 'abapGit view in the left rail' },
-  { id: 'cleaner', name: 'ABAP Cleaner', icon: 'sparkle', desc: 'Rewrites obsolete statements to modern ABAP: MOVE, CREATE OBJECT, CALL METHOD, EQ/NE, NOT … IS, chained declarations, alignment and keyword case.', keys: 'Ctrl+4 cleans the open source' },
-  { id: 'rapgen', name: 'RAP Generator', icon: 'layers', desc: 'Generates a RAP business object with UI service from a database table: views, metadata extension, behavior definitions, service definition and binding.', keys: 'Right-click a database table' },
-  { id: 'docs', name: 'ABAP Keyword Documentation & Element Info', icon: 'book', desc: 'Opens the SAP keyword documentation for the statement at the cursor and shows signatures and field details.', keys: 'F1 documentation · F2 element info' },
-  { id: 'outline', name: 'Outline', icon: 'outline', desc: 'Structure of the open object: classes, sections, methods, attributes, events and CDS elements.', keys: 'Outline view in the left rail' },
-];
-
-/** What changes for someone used to Eclipse ADT. */
-const ECLIPSE_POINTS: [string, string][] = [
-  ['No workspace, no projects', 'Add a system and start. Switching systems is one click, and every system keeps its own open editors.'],
-  ['Never lose work', 'Unsaved changes survive a crash or restart, every save goes into local history, and Compare shows what changed against the active version.'],
-  ['Editing like VS Code', 'Command palette, Ctrl+D for the next match with several cursors, Alt+Up/Down to move lines, Ctrl+Shift+K to delete them.'],
-  ['Built in, not plugins', 'Data preview and SQL console, ABAP Cleaner (also on save), RAP generator, abapGit, keyword documentation. Turn each on or off.'],
-  ['Clear errors', 'When a system cannot be reached you see why and what to do, with diagnostics you can copy.'],
-  ['Small and portable', 'Uses the system web view instead of a Java runtime. The portable build runs from any folder without installing.'],
-];
-
-const KIND_LABEL: Record<Connection['kind'], string> = { s4: 'On-premise', s4cloud: 'S/4HANA Cloud', btp: 'BTP ABAP', runner: 'Runner' };
-const AUTH_LABEL: Record<Connection['auth'], string> = { basic: 'User and password (keychain)', sso: 'Browser logon (single sign-on)', oauth: 'Service key (OAuth)', rfc: 'SAP GUI logon (RFC, SAProuter)', none: 'No login' };
-
-const $ = <T extends HTMLElement = HTMLElement>(s: string, r: ParentNode = document) => r.querySelector(s) as T;
-const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
-const debounce = <A extends unknown[]>(fn: (...a: A) => void, ms: number) => { let t = 0; return (...a: A) => { clearTimeout(t); t = window.setTimeout(() => fn(...a), ms); }; };
-const msg = (e: unknown) => (e instanceof Error ? e.message : typeof e === 'string' ? e : JSON.stringify(e));
-const store = {
-  get(k: string) { try { return localStorage.getItem(k); } catch { return null; } },
-  set(k: string, v: string) { try { localStorage.setItem(k, v); } catch { /* ignore */ } },
-};
-const json = <T>(k: string, d: T): T => { try { const v = store.get(k); return v ? { ...d, ...JSON.parse(v) } as T : d; } catch { return d; } };
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const TAURI = (window as any).__TAURI__ as { window?: { getCurrentWindow(): any } } | undefined;
-const IS_MAC = /Mac/i.test(navigator.platform || navigator.userAgent);
-
-/** Updates in the desktop app: the latest release, and installing a signed one in place. */
-export interface UpdateInfo { version: string; current: string; notes: string; url: string; installable: boolean }
-export interface UpdateBridge { check(): Promise<UpdateInfo | null>; install(): Promise<void> }
-
-export interface LogonBridge {
-  listen(cb: (e: { state: 'waiting' | 'done'; url: string }) => void): void;
-  cancel(): Promise<void>;
-  reopen(): Promise<void>;
-}
-
-export async function startApp(backend: Backend, opts: { brand?: string; prototype?: boolean; logon?: LogonBridge; updates?: UpdateBridge } = {}) {
+export async function startApp(backend: Backend, opts: { brand?: string; prototype?: boolean; logon?: LogonBridge; updates?: UpdateBridge; tools?: ToolsBridge } = {}) {
   const settings: Settings = json<Settings>('nusa-adt-settings', {
     editorFont: 13, autoComplete: true, restoreTabs: true, cleanerRules: DEFAULT_RULES,
     ext: { preview: true, abapgit: true, cleaner: true, rapgen: true, docs: true, outline: true },
-    formatOnSave: false, cleanOnSave: false, keepDrafts: true, previewTabs: true, formatter: 'nusa', keywordCase: 'upper', checkUpdates: true,
+    formatOnSave: false, cleanOnSave: false, keepDrafts: true, previewTabs: true, formatter: 'nusa', keywordCase: 'upper', checkUpdates: true, autoOpenLogon: false,
   });
   const saveSettings = () => store.set('nusa-adt-settings', JSON.stringify(settings));
   const ext = (id: ExtId) => settings.ext[id] !== false;
@@ -118,7 +79,15 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     debug: null as DebugState | null,
     /** waiting for a process to reach a breakpoint (Eclipse: debugger listener) */
     listening: false,
+    trTab: 'modifiable' as Transport['status'],
+    traces: null as TraceRun[] | { error: string } | null,
+    traceSel: null as { run: TraceRun; hits: TraceHit[] } | null,
+    dumps: null as Dump[] | { error: string } | null,
+    dumpSel: null as { dump: Dump; html?: string; text?: string } | null,
+    dumpsMine: store.get('nusa-adt-dumps-all') !== '1',
     searchQ: '',
+    searchType: '' as ObjType | '',
+    searchPkg: '',
     searchRes: [] as ObjRef[],
     searchErr: '',
     busy: '' as string,
@@ -267,6 +236,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   // ------------------------------------------------------------------ browser logon card
   // While the system waits for the browser, show the link so it can be copied into another
   // browser or profile on this computer, opened again, or cancelled.
+  opts.logon?.autoOpen(settings.autoOpenLogon).catch(() => undefined);
   opts.logon?.listen(ev => {
     document.getElementById('logonCard')?.remove();
     if (ev.state !== 'waiting') return;
@@ -277,9 +247,10 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     card.setAttribute('role', 'status');
     card.innerHTML = `<div class="lc-ic">${ic('lock')}</div>
       <div class="lc-main"><b>Log on to ${esc(c.sid)} in your browser</b>
-        <p>The logon page opened in your default browser. To use another browser or profile on this computer, copy the link and open it there.</p>
+        <p>${ev.opened ? 'The logon page opened in your default browser. For another browser or profile, copy the link and open it there.'
+          : 'Open the logon page in your default browser, or copy the link and open it in the browser or profile you log on with.'} Nusa Studio continues once you are logged on.</p>
         <code class="lc-url" title="${esc(ev.url)}">${esc(ev.url)}</code>
-        <div class="lc-actions"><button class="btn small primary" data-lc="copy">Copy link</button><button class="btn small" data-lc="open">Open again</button><button class="btn small ghost" data-lc="cancel">Cancel</button></div>
+        <div class="lc-actions"><button class="btn small ${ev.opened ? '' : 'primary'}" data-lc="open">${ev.opened ? 'Open again' : 'Open in browser'}</button><button class="btn small ${ev.opened ? 'primary' : ''}" data-lc="copy">Copy link</button><button class="btn small ghost" data-lc="cancel">Cancel</button></div>
       </div>`;
     card.onclick = async (e) => {
       const b = (e.target as HTMLElement).closest('[data-lc]') as HTMLElement | null;
@@ -303,7 +274,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       `<button type="${a.submit ? 'submit' : 'button'}" class="btn ${a.kind || ''}" data-i="${i}">${esc(a.label)}</button>`).join('')}</div></form>`;
     scrim.hidden = false;
     return new Promise<T | null>(resolve => {
-      const close = (v: unknown) => { scrim.hidden = true; modalResolve = null; resolve(v as T | null); setTimeout(() => { if (curSrc()) cm.focus(); }, 0); };
+      const close = (v: unknown) => { scrim.hidden = true; modalResolve = null; resolve(v as T | null); setTimeout(() => { if (curSrc() && canFocusEditor()) cm.focus(); }, 0); };
       modalResolve = close;
       root.querySelectorAll<HTMLButtonElement>('.modal-actions button').forEach(b => {
         b.onclick = (ev) => { const a = actions[+(b.dataset.i as string)]; if (a.submit) return; ev.preventDefault(); close(a.value ?? null); };
@@ -339,6 +310,8 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   const hideMenu = () => { $('#ctx').hidden = true; };
   const hidePop = () => { $('#infoPop').hidden = true; };
 
+  /** The editor takes the focus after loading only when nothing else has it: never from the palette or a dialog. */
+  const canFocusEditor = () => $('#palette').hidden && $('#modal').hidden;
   function openUrl(url: string) {
     const a = document.createElement('a');
     a.href = url; a.target = '_blank'; a.rel = 'noopener';
@@ -361,16 +334,35 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   const pkgOpen = (name: string, fav: boolean) => fav ? !S.collapsed.has(pkgId(name)) : S.openSub.has(pkgId(name));
   const persistTree = () => { store.set('nusa-adt-collapsed', JSON.stringify([...S.collapsed])); store.set('nusa-adt-open-sub', JSON.stringify([...S.openSub])); };
 
+  /** Package contents from the last session: shown at once, then replaced by the system's answer. */
+  const pkgStoreKey = (c: string, name: string) => `nusa-adt-pkg-${c}-${name}`;
+  function storedPkg(c: string, name: string): { packages: PkgRef[]; objects: ObjState[] } | null {
+    try {
+      const v = JSON.parse(store.get(pkgStoreKey(c, name)) || 'null');
+      return v && Array.isArray(v.packages) && Array.isArray(v.objects) ? v : null;
+    } catch { return null; }
+  }
+  function keepPkg(c: string, name: string, r: { packages: PkgRef[]; objects: ObjState[] }) {
+    if (r.objects.length + r.packages.length > 2000) return;     // very large packages are not kept
+    store.set(pkgStoreKey(c, name), JSON.stringify({ packages: r.packages, objects: r.objects.map(o => ({ ...o, lockedBy: undefined })) }));
+  }
+  const pkgLoads = new Map<string, Promise<void>>();
   async function loadPkg(name: string, force = false) {
     const cache = pkgCache();
     const have = cache[name];
     if (!force && have && have !== 'loading' && !('error' in have)) return;
-    cache[name] = 'loading';
+    const c = S.conn, k = `${c}/${name}`;
+    if (!force && pkgLoads.has(k)) return pkgLoads.get(k);
+    const stale = !force && !have ? storedPkg(c, name) : null;
+    cache[name] = stale || (have && have !== 'loading' && !('error' in have) ? have : 'loading');
     if (S.view === 'explorer') renderSide();
-    const c = S.conn;
-    try { const r = await backend.packageContents(c, name); (S.pkgs[c] ||= {})[name] = r; }
-    catch (e) { (S.pkgs[c] ||= {})[name] = { error: msg(e) }; }
-    if (S.view === 'explorer' && c === S.conn) renderSide();
+    const job = (async () => {
+      try { const r = await backend.packageContents(c, name); (S.pkgs[c] ||= {})[name] = r; keepPkg(c, name, r); }
+      catch (e) { if (!stale) (S.pkgs[c] ||= {})[name] = { error: msg(e) }; else logDiag(c, `package ${name}: showing the last known contents, refresh failed: ${msg(e)}`); }
+      if (S.view === 'explorer' && c === S.conn) renderSide();
+    })();
+    pkgLoads.set(k, job);
+    try { await job; } finally { if (pkgLoads.get(k) === job) pkgLoads.delete(k); }
   }
   async function loadTree() {
     const old = pkgCache();
@@ -400,15 +392,13 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     for (const [k, d] of Object.entries(pkgCache())) { set.add(k); if (d !== 'loading' && !('error' in d)) d.packages.forEach(p => set.add(p.name)); }
     return [...set];
   };
-  const objByUri = (uri: string) => allObjs().find(o => o.uri === uri);
+  const objByUri = (uri: string): ObjRef | undefined => allObjs().find(o => o.uri === uri)
+    ?? [...progIncl.values()].flatMap(v => Array.isArray(v) ? v : []).find(o => o.uri === uri);
   async function updateObjInCache(ref: ObjState) {
     for (const d of Object.values(pkgCache())) if (d !== 'loading' && !('error' in d)) { const i = d.objects.findIndex(o => o.uri === ref.uri); if (i >= 0) d.objects[i] = { ...ref }; }
   }
 
   // ------------------------------------------------------------------ rendering
-  function glyph(type: ObjType | 'DATA') {
-    return `<i class="glyph g-${type}" title="${esc(type === 'DATA' ? 'Data preview' : TYPE_INFO[type].label)}">${typeIcon(type)}</i>`;
-  }
   const isForm = (t: Tab | undefined) => !!t && t.view === 'source' && TYPE_INFO[t.ref.type].editor === 'xml';
   const typeLabel = (o: ObjRef) => o.type === 'XOBJ' ? (o.typeLabel || o.adtType || 'Object') : TYPE_INFO[o.type].label;
   const tabGlyph = (t: Tab) => glyph(t.view === 'data' ? 'DATA' : t.ref.type);
@@ -420,7 +410,13 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     if (t.view === 'data') return '';
     if (t.view !== 'source') return 'Nothing to run here';
     if ((t.ref.type === 'TABL' || t.ref.type === 'DDLS') && ext('preview')) return '';
-    if (t.ref.type === 'PROG') return conn().runReports ? '' : 'Reports with list output run in SAP GUI on this system. Use a class that implements IF_OO_ADT_CLASSRUN and press F9.';
+    if (t.ref.type === 'PROG') {
+      if (conn().runReports || (opts.tools && conn().kind === 's4')) return '';
+      return conn().kind === 's4' ? 'Reports run in SAP GUI. The Nusa Studio desktop app opens them there with F8.'
+        : 'This system has no SAP GUI. Use a class that implements IF_OO_ADT_CLASSRUN and press F9.';
+    }
+    if (t.ref.type === 'INCL') return 'An include does not run on its own. Run the program that includes it.';
+    if (t.ref.type === 'FUNC') return opts.tools && conn().kind === 's4' ? '' : 'Function modules are tested in SE37 in SAP GUI. The desktop app opens it with F8.';
     if (t.ref.type === 'CLAS') {
       const src = docs.get(`${t.key}|main`)?.getValue() ?? '';
       return /if_oo_adt_classrun/i.test(src) ? '' : 'This class does not implement IF_OO_ADT_CLASSRUN, so it cannot run as a console application.';
@@ -481,6 +477,49 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     return `<li style="--d:${depth}"><button class="row leaf ${on ? 'on' : ''}" data-act="open" data-uri="${esc(o.uri)}" data-ctx="obj" title="${esc(o.name)}${o.desc ? ' · ' + esc(o.desc) : ''}">
       ${glyph(o.type)}<span class="lbl">${esc(o.name)}</span>${o.inactive ? '<em class="inact" title="Inactive version exists">inactive</em>' : ''}</button></li>`;
   }
+  let searchSeq = 0;
+  /** Programs open like in SE80: the program, and under it the includes it uses. */
+  const progIncl = new Map<string, ObjRef[] | 'loading' | { error: string }>();
+  function includesIn(src: string): string[] {
+    const out: string[] = [];
+    for (const m of src.matchAll(/^[ \t]*INCLUDE[ \t]+(?!TYPE\b|STRUCTURE\b)([\w/<>]+)[ \t]*(?:IF[ \t]+FOUND[ \t]*)?\./gim)) {
+      const n = m[1].toUpperCase();
+      if (!out.includes(n)) out.push(n);
+    }
+    return out;
+  }
+  async function loadIncludes(o: ObjRef, id: string) {
+    if (progIncl.get(id) === 'loading') return;
+    progIncl.set(id, 'loading');
+    try {
+      if (o.type === 'FUGR') progIncl.set(id, await backend.groupContents(S.conn, o));
+      else {
+        const src = await backend.read(S.conn, o, 'main', 'inactive');
+        progIncl.set(id, includesIn(src).map(n => allObjs().find(x => x.name === n && (x.type === 'INCL' || x.type === 'PROG'))
+          ?? { uri: uriFor('INCL', n), name: n, type: 'INCL' as ObjType, pkg: '', desc: '' }));
+      }
+    } catch (e) { progIncl.set(id, { error: msg(e) }); }
+    if (S.view === 'explorer') renderSide();
+  }
+  function progRow(o: ObjState, depth: number) {
+    const id = `prog:${S.conn}:${o.uri}`;
+    const open = S.openSub.has(id);
+    const t = cur();
+    let inner = '';
+    if (open) {
+      const inc = progIncl.get(id);
+      if (!inc) queueMicrotask(() => loadIncludes(o, id));
+      inner = !inc || inc === 'loading' ? `<li class="empty" style="--d:${depth + 1}"><i class="spin"></i>Loading</li>`
+        : 'error' in inc ? `<li class="empty err" style="--d:${depth + 1}">${esc(inc.error)}</li>`
+          : inc.length ? inc.map(r => `<li style="--d:${depth + 1}"><button class="row leaf ${t && t.ref.uri === r.uri ? 'on' : ''}" data-act="open-ref" data-uri="${esc(r.uri)}" data-name="${esc(r.name)}" data-type="${r.type}" data-ctx="obj" title="${esc(TYPE_INFO[r.type].label)} ${esc(r.name)}${r.desc ? ' · ' + esc(r.desc) : ''}">${glyph(r.type)}<span class="lbl">${esc(r.name)}</span></button></li>`).join('')
+            : `<li class="empty" style="--d:${depth + 1}">${o.type === 'FUGR' ? 'No function modules' : 'No includes'}</li>`;
+    }
+    return `<li class="node prog-node ${open ? '' : 'closed'}" style="--d:${depth}">
+      <button class="twist-btn" data-act="prog-toggle" data-id="${esc(id)}" aria-expanded="${open}" aria-label="${open ? 'Hide' : 'Show'} the ${o.type === 'FUGR' ? 'function modules' : 'includes'} of ${esc(o.name)}">${ic('chev', 'twisty')}</button>
+      <button class="row leaf ${t && t.ref.uri === o.uri ? 'on' : ''}" data-act="open" data-uri="${esc(o.uri)}" data-ctx="obj" title="${esc(o.name)}${o.desc ? ' · ' + esc(o.desc) : ''}">${glyph(o.type)}<span class="lbl">${esc(o.name)}</span>${o.inactive ? '<em class="inact" title="Inactive version exists">inactive</em>' : ''}</button>
+      <ul>${inner}</ul></li>`;
+  }
+
   function pkgNode(name: string, desc: string, depth: number, fav: boolean): string {
     const open = pkgOpen(name, fav);
     const data = pkgCache()[name];
@@ -502,7 +541,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
             const sets: [string, string, ObjState[]][] = ty === 'XOBJ'
               ? [...new Set(list.map(o => o.typeLabel || 'Other'))].sort().map(l => [`XOBJ-${l}`, l, list.filter(o => (o.typeLabel || 'Other') === l)])
               : [[ty, TYPE_INFO[ty].folder, list]];
-            return sets.map(([id, label, l]) => treeNode(`${pkgId(name)}/${id}`, label, l.map(o => objRow(o, depth + 3)).join(''), `<span class="cnt">${l.length}</span>`, depth + 2));
+            return sets.map(([id, label, l]) => treeNode(`${pkgId(name)}/${id}`, label, l.map(o => o.type === 'PROG' || o.type === 'FUGR' ? progRow(o, depth + 3) : objRow(o, depth + 3)).join(''), `<span class="cnt">${l.length}</span>`, depth + 2));
           }).join('');
           parts.push(treeNode(`${pkgId(name)}/${g.id}`, g.label, folders, '', depth + 1));
         }
@@ -539,25 +578,46 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       </ul>`;
   }
 
+  const SEARCH_TYPES: ObjType[] = ['CLAS', 'INTF', 'PROG', 'INCL', 'FUGR', 'FUNC', 'DDLS', 'BDEF', 'DDLX', 'DCLS', 'SRVD', 'SRVB', 'TABL', 'DTEL', 'DOMA', 'TTYP', 'MSAG'];
   function renderSearch() {
     const res = S.searchRes;
     $('#sideBody').innerHTML = `
       <div class="side-pad">
         <label class="field"><span>Object name or description</span>
           <input id="searchInput" value="${esc(S.searchQ)}" placeholder="ZCL_NUSA*" autocomplete="off" spellcheck="false"></label>
+        <div class="two search-filters">
+          <label class="field"><span>Type</span><select id="searchType"><option value="">All types</option>${SEARCH_TYPES.map(t => `<option value="${t}" ${S.searchType === t ? 'selected' : ''}>${esc(TYPE_INFO[t].label)}</option>`).join('')}</select></label>
+          <label class="field"><span>Package</span><input id="searchPkg" value="${esc(S.searchPkg)}" placeholder="ZNUSA*" autocomplete="off" spellcheck="false"></label>
+        </div>
       </div>
       ${S.searchErr ? `<div class="side-pad sys-err">${esc(S.searchErr)}</div>` : ''}
       <ul class="list">${res.map(o => `<li><button class="row leaf" data-act="open-search" data-uri="${esc(o.uri)}" data-ctx="obj">${glyph(o.type)}<span class="lbl">${esc(o.name)}<small>${esc(typeLabel(o))}${o.pkg ? ' · ' + esc(o.pkg) : ''}${o.desc ? ' · ' + esc(o.desc) : ''}</small></span></button></li>`).join('') ||
-        (S.searchErr ? '' : `<li class="empty">${S.searchQ ? 'No objects match' : 'Type to search the repository of ' + esc(conn().sid)}</li>`)}</ul>`;
+        (S.searchErr ? '' : `<li class="empty">${S.searchQ || S.searchType || S.searchPkg ? 'No objects match' : 'Type to search the repository of ' + esc(conn().sid)}</li>`)}</ul>`;
     const inp = $<HTMLInputElement>('#searchInput');
-    inp.oninput = debounce(async () => {
+    const run = async (focusId: string) => {
       S.searchQ = inp.value;
-      try { S.searchRes = S.searchQ ? await backend.search(S.conn, S.searchQ) : []; S.searchErr = ''; }
-      catch (e) { S.searchRes = []; S.searchErr = `Search failed: ${msg(e)}`; }
-      const pos = inp.selectionStart;
+      S.searchType = $<HTMLSelectElement>('#searchType').value as ObjType | '';
+      S.searchPkg = $<HTMLInputElement>('#searchPkg').value.trim().toUpperCase();
+      const q = S.searchQ || (S.searchType || S.searchPkg ? '*' : '');
+      // only the newest search shows its result: an older, slower answer never overwrites it
+      const seq = ++searchSeq;
+      let res: ObjRef[] = [], err = '';
+      try { res = q ? await backend.search(S.conn, q, { type: S.searchType || undefined, pkg: S.searchPkg || undefined }) : []; }
+      catch (e) { err = `Search failed: ${msg(e)}`; }
+      if (seq !== searchSeq || S.view !== 'search') return;
+      S.searchRes = res; S.searchErr = err;
+      const el = document.activeElement as HTMLInputElement | null;
+      // keep the cursor in the search field, but never take the focus from the palette, a dialog or the editor
+      const inSearch = !el || el === document.body || !!el.closest('#sideBody');
+      const pos = el && 'selectionStart' in el ? el.selectionStart : null;
       renderSearch();
-      const again = $<HTMLInputElement>('#searchInput'); again.focus(); again.setSelectionRange(pos, pos);
-    }, 200);
+      if (!inSearch) return;
+      const again = document.getElementById(focusId) as HTMLInputElement | null;
+      again?.focus(); if (again && pos !== null && again.tagName === 'INPUT') again.setSelectionRange(pos, pos);
+    };
+    inp.oninput = debounce(() => run('searchInput'), 200);
+    $<HTMLSelectElement>('#searchType').onchange = () => run('searchType');
+    $<HTMLInputElement>('#searchPkg').oninput = debounce(() => run('searchPkg'), 300);
   }
 
   function renderOutline() {
@@ -568,6 +628,12 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     $('#sideBody').innerHTML = `<ul class="list outline">${items.map(i => `<li style="--d:${i.depth}"><button class="row leaf" data-act="goline" data-line="${i.line}"><i class="ol-k ol-${i.kind}">${KIC[i.kind]}</i><span class="lbl">${esc(i.name)}${i.detail ? `<small>${esc(i.detail)}</small>` : ''}</span><span class="cnt">${i.line + 1}</span></button></li>`).join('') || '<li class="empty">Nothing to outline</li>'}</ul>`;
   }
 
+  /** SE09/SE10 view: open and released requests on two tabs, grouped by request type. */
+  /** objects by "TYPE NAME", built once per render instead of once per transport entry */
+  let trIndex = new Map<string, ObjState>();
+  const trView = (): TrView => ({ tab: S.trTab, conn: S.conn, collapsed: S.collapsed, picks: trPick, index: trIndex });
+  const trTabs = (list: Transport[]) => trTabsHtml(list, trView());
+  const trGroups = (list: Transport[]) => trGroupsHtml(list, trView());
   /** Object entries ticked in the Transport Organizer, per request */
   const trPick = new Map<string, Set<string>>();
   function renderTransports() {
@@ -578,29 +644,14 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       return;
     }
     const list = S.transports;
+    trIndex = new Map(allObjs().map(o => [`${o.type} ${o.name}`, o]));
     $('#sideBody').innerHTML = `
       <form class="side-pad new-tr" id="newTr">
         <label class="field"><span>New request</span><input id="newTrDesc" placeholder="Short description" maxlength="60" required></label>
         <button class="btn" type="submit">${ic('plus')}Create</button>
       </form>
-      <ul class="trs">${list.map(t => `
-        <li class="tr ${t.status}">
-          <div class="tr-head">
-            <code>${esc(t.id)}</code>
-            <span class="pill ${t.status === 'modifiable' ? 'p-open' : 'p-done'}">${t.status === 'modifiable' ? 'Modifiable' : 'Released'}</span>
-          </div>
-          <div class="tr-desc">${esc(t.desc)}</div>
-          <div class="tr-meta">Owner ${esc(t.owner)}${t.task ? ` · Task <code>${esc(t.task)}</code>` : ''}</div>
-          <ul class="tr-objs">${t.objects.map(e => {
-            const [, type, name] = e.split(' ');
-            const o = allObjs().find(x => x.name === name && x.type === type);
-            const g = type in TYPE_INFO ? glyph(type as ObjType) : `<i class="glyph g-${type === 'DEVC' ? 'DEVC' : 'XOBJ'}">${typeIcon(type)}</i>`;
-            const pick = t.status === 'modifiable' ? `<input type="checkbox" class="tr-pick" data-tr="${esc(t.id)}" data-entry="${esc(e)}" ${trPick.get(t.id)?.has(e) ? 'checked' : ''} aria-label="Select ${esc(name)}">` : '';
-            return `<li title="${esc(e)}">${pick}${o ? `<button class="link" data-act="open" data-uri="${esc(o.uri)}">` : '<span>'}${g}<span class="tr-name">${esc(name)}</span>${o ? '</button>' : '</span>'}<small>${esc(type)}</small></li>`;
-          }).join('') || '<li class="empty">No objects recorded</li>'}</ul>
-          ${t.status !== 'modifiable' ? '' : trPick.get(t.id)?.size ? `<div class="tr-actions picked"><span class="muted">${trPick.get(t.id)!.size} selected</span><button class="btn small" data-act="tr-move" data-id="${esc(t.id)}" title="Move the selected objects to another request">Move…</button><button class="btn ghost small danger-text" data-act="tr-remove" data-id="${esc(t.id)}" title="Remove the selected objects from this request; the objects stay">Remove…</button><button class="btn ghost small" data-act="tr-unpick" data-id="${esc(t.id)}">Clear</button></div>`
-            : `<div class="tr-actions"><button class="btn ghost small" data-act="release" data-id="${esc(t.id)}">Release…</button><button class="btn ghost small" data-act="tr-edit" data-id="${esc(t.id)}">Edit description</button><button class="btn ghost small danger-text" data-act="tr-delete" data-id="${esc(t.id)}">Delete…</button></div>`}
-        </li>`).join('') || (c.user ? `<li class="empty">No requests of ${esc(c.user)} on ${esc(c.sid)}.<br>Eclipse shows requests you expect here? <button class="link" data-act="diag" data-id="${esc(c.id)}">Open the connection log</button> and send it with your issue.</li>` : '')}</ul>
+      ${trTabs(list)}
+      ${list.length ? trGroups(list.filter(t => t.status === S.trTab)) : (c.user ? `<ul class="trs"><li class="empty">No requests of ${esc(c.user)} on ${esc(c.sid)}.<br>Eclipse shows requests you expect here? <button class="link" data-act="diag" data-id="${esc(c.id)}">Open the connection log</button> and send it with your issue.</li></ul>` : '')}
       ${!list.length && !c.user ? `<form class="side-pad tr-user" id="trUser">
         <p class="note">Nusa Studio lists the requests of your user. With browser logon it could not read your user ID from ${esc(c.sid)}; enter it once (shown in Eclipse or in the Fiori launchpad under your profile, for example CB9980000000).</p>
         <label class="field"><span>Your user ID</span><input id="trUserId" autocomplete="off" spellcheck="false" required></label>
@@ -805,6 +856,10 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
         <h3>ABAP Cleaner rules <small>Ctrl+4</small></h3>
         ${RULES.map(r => `<label class="check"><input type="checkbox" data-rule="${r.id}" ${settings.cleanerRules.includes(r.id) ? 'checked' : ''}><span>${esc(r.label)}${r.example ? `<small>${esc(r.example)}</small>` : ''}</span></label>`).join('')}
       </section>` : ''}
+      ${opts.logon ? `<section class="set">
+        <h3>Browser logon</h3>
+        <label class="check"><input type="checkbox" id="setAutoLogon" ${settings.autoOpenLogon ? 'checked' : ''}><span>Open the logon page in the default browser at once<small>Off: the window shows the link with Open in browser and Copy link, so you choose the browser or profile.</small></span></label>
+      </section>` : ''}
       ${opts.updates ? `<section class="set">
         <h3>Updates</h3>
         <label class="check"><input type="checkbox" id="setUpd" ${settings.checkUpdates ? 'checked' : ''}><span>Look for a new version once a day<small>Reads the latest release on GitHub; nothing about you or your systems is sent.</small></span></label>
@@ -813,7 +868,10 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       <section class="set">
         <h3>About</h3>
         <p class="note">Nusa Studio ${APP_VERSION} · open-source ABAP workbench by ABAP Nusantara. Systems are stored in your user profile (or next to the portable exe); passwords and tickets in the operating system keychain.</p>
+        <button class="btn small" data-cmd="report">Report a problem…</button>
       </section>`;
+    const al = document.getElementById('setAutoLogon') as HTMLInputElement | null;
+    if (al) al.onchange = () => { settings.autoOpenLogon = al.checked; saveSettings(); opts.logon?.autoOpen(al.checked).catch(() => undefined); };
     const upd = document.getElementById('setUpd') as HTMLInputElement | null;
     if (upd) upd.onchange = () => { settings.checkUpdates = upd.checked; saveSettings(); };
     $<HTMLSelectElement>('#setFont').onchange = (e) => {
@@ -883,9 +941,10 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       el.innerHTML = `<button class="${!t!.raw ? 'on' : ''}" data-act="xml-mode" data-id="form">Form</button><button class="${t!.raw ? 'on' : ''}" data-act="xml-mode" data-id="xml">XML${incDirty(t!, 'main') ? '<i class="ddot"></i>' : ''}</button>`;
       return;
     }
-    if (!t || t.view !== 'source' || t.ref.type !== 'CLAS') { el.hidden = true; return; }
+    if (!t || t.view !== 'source' || (t.ref.type !== 'CLAS' && t.ref.type !== 'PROG')) { el.hidden = true; return; }
     el.hidden = false;
-    el.innerHTML = backend.includesOf('CLAS').map(inc => `<button class="${inc === t.include ? 'on' : ''}" data-act="inc" data-inc="${inc}">${esc(INCLUDE_LABEL[inc])}${incDirty(t, inc) ? '<i class="ddot"></i>' : ''}</button>`).join('');
+    // classes: their includes; programs: the source and its text elements (SE38 → Goto → Text Elements)
+    el.innerHTML = backend.includesOf(t.ref.type).map(inc => `<button class="${inc === t.include ? 'on' : ''}" data-act="inc" data-inc="${inc}">${esc(inc === 'main' && t.ref.type === 'PROG' ? 'Source' : INCLUDE_LABEL[inc])}${incDirty(t, inc) ? '<i class="ddot"></i>' : ''}</button>`).join('');
   }
 
   function sevIcon(s: Problem['sev']) { return ic(s === 'error' ? 'error' : s === 'warning' ? 'warning' : 'info', 's-' + s); }
@@ -900,6 +959,8 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       ['unit', 'ABAP Unit', S.unit ? `<i class="cnt ${S.unit.methods.some(m => m.status !== 'ok') ? 'c-err' : 'c-ok'}">${S.unit.methods.length}</i>` : ''],
       ['output', 'Output', ''],
       ['where', 'Where-Used', S.where ? `<i class="cnt">${S.where.hits.length}</i>` : ''],
+      ['traces', 'Profiler', ''],
+      ['dumps', 'Runtime Errors', Array.isArray(S.dumps) && ownDumps(S.dumps, conn().user, S.dumpsMine).length ? `<i class="cnt c-err">${ownDumps(S.dumps, conn().user, S.dumpsMine).length}</i>` : ''],
     ];
     $('#panelTabs').innerHTML = tabs.map(([id, label, extra]) => `<button role="tab" class="${S.panel === id ? 'on' : ''}" aria-selected="${S.panel === id}" data-act="panel" data-id="${id}">${label}${extra}</button>`).join('') +
       `<span class="grow"></span>${S.busy ? `<span class="busy"><i class="spin"></i>${esc(S.busy)}</span>` : ''}<button class="icon-btn" data-cmd="panel" title="Hide panel (Ctrl+J)">${ic('close')}</button>`;
@@ -934,13 +995,105 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       const o = S.output;
       body.innerHTML = o ? `<div class="sumline"><b>${esc(o.title)}</b><span class="muted">${o.kind === 'list' ? 'ABAP list' : 'Console'} · ${esc(o.at)}</span></div>${o.note ? `<div class="notice">${ic('info')}${esc(o.note)}</div>` : ''}<pre class="out">${esc(o.output)}</pre>`
         : '<div class="empty-panel">Run a program with F8 or a console class (IF_OO_ADT_CLASSRUN) with F9.</div>';
+    } else if (S.panel === 'traces') {
+      body.innerHTML = renderTraces();
+    } else if (S.panel === 'dumps') {
+      body.innerHTML = renderDumps({ user: conn().user || 'your user', list: S.dumps, mine: S.dumpsMine, sel: S.dumpSel });
     } else {
       const w = S.where;
       if (!w) { body.innerHTML = '<div class="empty-panel">Place the cursor on a name and press Ctrl+Shift+G.</div>'; return; }
       body.innerHTML = `<div class="sumline"><b>${esc(w.term)}</b><span>${w.hits.length} references</span></div><ul>${w.hits.map(h => `<li><button class="prow" ${locAttrs(h)}>${glyph(h.type)}<span class="pmsg"><code>${esc(h.text)}</code></span><span class="ploc">${esc(h.name)}${h.include !== 'main' ? ' · ' + esc(INCLUDE_LABEL[h.include]) : ''} · line ${h.line + 1}</span></button></li>`).join('')}</ul>`;
     }
   }
-  const openPanel = (p: PanelTab) => { S.panel = p; S.panelOpen = true; };
+  const openPanel = (p: PanelTab) => { S.panel = p; S.panelOpen = true; if (p === 'traces' && !S.traces) loadTraces(); if (p === 'dumps' && !S.dumps) loadDumps(); };
+
+  // ------------------------------------------------------------------ runtime errors (ST22)
+  async function loadDumps() {
+    S.dumps = null; S.dumpSel = null; if (S.panel === 'dumps') renderPanel();
+    const c = S.conn;
+    let r: Dump[] | { error: string };
+    try { r = await backend.dumps(c); } catch (e) { r = { error: `Reading the runtime errors failed: ${msg(e)}` }; }
+    if (c !== S.conn) return;
+    S.dumps = r; renderPanel();
+  }
+  async function openDump(id: string) {
+    const dump = Array.isArray(S.dumps) ? S.dumps.find(d => d.id === id) : undefined;
+    if (!dump) return;
+    S.dumpSel = { dump }; renderPanel();
+    try {
+      const r = await backend.dumpDetail(S.conn, dump);
+      if (S.dumpSel?.dump !== dump) return;
+      S.dumpSel = { dump, ...r };
+      if (r.html === undefined && r.text === undefined) S.dumpSel.text = '(the system sent no description)';
+    } catch (e) { if (S.dumpSel?.dump === dump) S.dumpSel = { dump, text: `Reading the description failed: ${msg(e)}` }; }
+    renderPanel();
+  }
+  const showDumps = () => { S.dumpSel = null; S.panel = 'dumps'; S.panelOpen = true; loadDumps(); renderPanel(); };
+
+  // ------------------------------------------------------------------ version history and other systems
+  const versions = createHistory({
+    backend,
+    conns: () => S.conns,
+    sys: id => S.sys[id],
+    setSys: (id, v) => { S.sys[id] = v; },
+    editorText: async () => { const t = curSrc(); return t ? (await ensureDoc(t, t.include)).getValue() : ''; },
+    openDiff: (left, ll, right, rl) => { const t = curSrc(); if (t) openDiff(t, t.include, left, ll, right, rl); },
+    modal: (title, body, buttons, init) => modal(title, body, buttons, init),
+    working: async (label, fn) => { S.busy = label; renderPanel(); try { return await fn(); } finally { S.busy = ''; renderPanel(); } },
+    toast: (text, kind, ms) => toast(text, kind, ms),
+  });
+  const compareRevision = () => { const t = curSrc(); if (!t) { toast('Open a source first'); return; } return versions.compareRevision({ conn: t.conn, ref: t.ref, include: t.include }); };
+  const compareSystem = () => { const t = curSrc(); if (!t) { toast('Open a source first'); return; } return versions.compareSystem({ conn: t.conn, ref: t.ref, include: t.include }); };
+
+  // ------------------------------------------------------------------ profiler (ABAP traces, like ABAP Profiling in Eclipse)
+  function renderTraces(): string {
+    const t = curSrc();
+    const canProfile = t && (t.ref.type === 'CLAS' || t.ref.type === 'PROG') && !runBlocker(t);
+    return traceView({ user: conn().user || 'your user', profile: canProfile ? t!.ref.name : undefined, sel: S.traceSel, list: S.traces });
+  }
+  async function loadTraces() {
+    S.traces = null; if (S.panel === 'traces') renderPanel();
+    try { S.traces = await backend.traces(S.conn); } catch (e) { S.traces = { error: `Reading the traces failed: ${msg(e)}` }; }
+    renderPanel();
+  }
+  async function openTrace(id: string) {
+    const run = Array.isArray(S.traces) ? S.traces.find(r => r.id === id) : undefined;
+    if (!run) return;
+    await busy('Reading the hit list', async () => { S.traceSel = { run, hits: await backend.traceHitList(S.conn, id) }; });
+    renderPanel();
+  }
+  async function traceNextRun(quiet = false) {
+    await busy('Requesting a trace', () => backend.traceRequest(S.conn, `Nusa Studio ${new Date().toLocaleString()}`));
+    if (!quiet) toast(`The next run of ${conn().user || 'your user'} is traced (for one hour). Run your code, then press Refresh in the Profiler.`, 'ok', 8000);
+  }
+  /** Profile As ABAP Application: trace, run, then show the hit list. */
+  async function profile() {
+    const t = curSrc(); if (!t) return;
+    const why = runBlocker(t);
+    if (why) { toast(why, 'warn', 6000); return; }
+    S.traceSel = null; openPanel('traces');
+    await traceNextRun(true);
+    if (t.ref.type === 'PROG' && !conn().runReports) {
+      if (await runInGui(t)) toast('Traced in SAP GUI. When the report has finished, press Refresh in the Profiler.', 'info', 9000);
+      renderAll();
+      return;
+    }
+    const before = Array.isArray(S.traces) ? S.traces.map(r => r.id) : [];
+    await busy(`Profiling ${t.ref.name}`, async () => {
+      const r = await backend.run(t.conn, t.ref);
+      S.output = { ...r, title: t.ref.name, at: new Date().toLocaleTimeString() };
+      // the trace file is written after the run; give the system a moment
+      for (let i = 0; i < 6; i++) {
+        const list = await backend.traces(S.conn);
+        S.traces = list;
+        const fresh = list.find(x => !before.includes(x.id));
+        if (fresh) { S.traceSel = { run: fresh, hits: await backend.traceHitList(S.conn, fresh.id) }; break; }
+        await new Promise(res => setTimeout(res, 1500));
+      }
+    });
+    if (!S.traceSel) toast('The run finished but its trace is not there yet. Press Refresh in the Profiler in a moment.', 'info', 7000);
+    renderAll();
+  }
 
   function renderStatus() {
     const c = conn();
@@ -1024,7 +1177,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     if (pane.dataset.key !== paneKey) { pane.dataset.key = paneKey; requestAnimationFrame(() => { pane.scrollTop = 0; }); }
     if (isForm(t)) {
       const d = docs.get(docKey(t, 'main'));
-      if (!d) { pane.innerHTML = '<div class="xf"><p class="muted"><i class="spin"></i>Loading</p></div>'; return; }
+      if (!d) { pane.innerHTML = '<div class="form-loading"><p class="muted"><i class="spin"></i>Loading</p></div>'; return; }
       const ro = !!TYPE_INFO[t.ref.type].readOnly || !!t.ref.lockedBy;
       pane.innerHTML = renderXmlForm(d.getValue(), {
         type: t.ref.type, readOnly: ro, typeLabel: typeLabel(t.ref), glyph: glyph(t.ref.type).replace('class="glyph', 'class="glyph big'),
@@ -1049,7 +1202,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
           d.setValue(xml);
         } catch (e) { fail(e); return; }
         // field label counters follow the text and the chosen length
-        if (el.dataset.labelOf) {
+        if (el.dataset.labelOf || el.parentElement?.classList.contains('of-counted')) {
           const cnt = el.parentElement?.querySelector('.of-counter');
           const max = +(el.getAttribute('maxlength') || 0);
           if (cnt) { cnt.textContent = `${el.value.length}${max ? ' / ' + max : ''}`; cnt.classList.toggle('over', !!max && el.value.length > max); }
@@ -1231,7 +1384,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     if (!d) {
       const text = await backend.read(t.conn, t.ref, inc, 'inactive');
       if (docs.get(k)) return docs.get(k);
-      d = newDoc(text, isCdsLike(t.ref.type) ? 'cds' : isSourceType(t.ref.type) ? 'abap' : 'text');
+      d = newDoc(text, isTextInclude(inc) ? 'text' : isCdsLike(t.ref.type) ? 'cds' : isSourceType(t.ref.type) ? 'abap' : 'text');
       docs.set(k, d);
       base.set(k, text);
       let draft: { at: number; base: string; text: string } | null = null;
@@ -1346,7 +1499,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     }
     renderAll();
     if (window.innerWidth < 760 && S.sideOpen && S.view === 'explorer') { S.sideOpen = false; renderActivity(); }
-    setTimeout(() => { cm.refresh(); cm.focus(); }, 0);
+    setTimeout(() => { cm.refresh(); if (canFocusEditor()) cm.focus(); }, 0);
   }
 
   async function openObj(ref: ObjRef | ObjState, inc: Include = 'main', line?: number, preview = false) {
@@ -1502,7 +1655,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     const incs = backend.includesOf(t.ref.type).filter(inc => incDirty(t, inc));
     if (!incs.length) { toast(`${t.ref.name} has no unsaved changes`); return true; }
     if ((TYPE_INFO[t.ref.type].editor === 'abap' || (TYPE_INFO[t.ref.type].editor === 'cds' && settings.formatOnSave)) && (settings.cleanOnSave || settings.formatOnSave)) {
-      for (const inc of incs) {
+      for (const inc of incs.filter(i => !isTextInclude(i))) {
         const d = docs.get(docKey(t, inc));
         let text: string = d.getValue();
         if (settings.cleanOnSave && ext('cleaner') && TYPE_INFO[t.ref.type].editor === 'abap') text = cleanAbap(text, settings.cleanerRules).text;
@@ -1610,7 +1763,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   async function format() {
     const t = curSrc(); if (!t) return;
     const ed = TYPE_INFO[t.ref.type].editor;
-    if (ed !== 'abap' && ed !== 'cds') { toast('Nothing to format in this editor'); return; }
+    if ((ed !== 'abap' && ed !== 'cds') || isTextInclude(t.include)) { toast('Nothing to format in this editor'); return; }
     await busy('Formatting', async () => {
       const src = cm.getValue();
       const out = await formatText(t, src);
@@ -1622,7 +1775,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   function cleanUp() {
     const t = curSrc(); if (!t) return;
     if (!ext('cleaner')) { toast('Enable the ABAP Cleaner extension first', 'warn'); return; }
-    if (TYPE_INFO[t.ref.type].editor !== 'abap') { toast('ABAP Cleaner works on ABAP source', 'warn'); return; }
+    if (TYPE_INFO[t.ref.type].editor !== 'abap' || isTextInclude(t.include)) { toast('ABAP Cleaner works on ABAP source', 'warn'); return; }
     const r = cleanAbap(cm.getValue(), settings.cleanerRules);
     if (!r.changes.length) { toast('Nothing to clean up', 'ok', 2000); return; }
     replaceAll(r.text);
@@ -1638,7 +1791,8 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     if (t.view === 'source' && (t.ref.type === 'TABL' || t.ref.type === 'DDLS') && ext('preview')) { openPreview(t.ref.name); return; }
     const why = runBlocker(t);
     if (why) { toast(why, 'warn', 6000); return; }
-    if ((t.ref.type === 'PROG' || t.ref.type === 'CLAS') && allBreakpoints().length && await startDebug(t)) return;
+    if ((t.ref.type === 'PROG' || t.ref.type === 'CLAS' || t.ref.type === 'FUNC') && allBreakpoints().length && await startDebug(t)) return;
+    if ((t.ref.type === 'PROG' && !conn().runReports) || t.ref.type === 'FUNC') { await runInGui(t); return; }
     await busy(`Running ${t.ref.name}`, async () => {
       const r = await backend.run(t.conn, t.ref);
       S.output = { ...r, title: t.ref.name, at: new Date().toLocaleTimeString() };
@@ -1733,7 +1887,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
 
   function toggleBp(line = cm.getCursor().line) {
     const t = curSrc(); if (!t) return;
-    if (TYPE_INFO[t.ref.type].editor !== 'abap' || t.ref.type === 'INTF') { toast('Breakpoints need executable ABAP code', 'warn'); return; }
+    if (TYPE_INFO[t.ref.type].editor !== 'abap' || t.ref.type === 'INTF' || isTextInclude(t.include)) { toast('Breakpoints need executable ABAP code', 'warn'); return; }
     const info = cm.lineInfo(line);
     cm.setGutterMarker(line, 'bp-gutter', info.gutterMarkers && info.gutterMarkers['bp-gutter'] ? null : bpMarker());
     if (S.view === 'debug') renderSide();
@@ -1948,11 +2102,33 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     await runRefactoring(t, `Extract method ${start.name}`, tr => backend.extractPreview(t.conn, start, tr));
   }
 
+  /** Starts a report in SAP GUI (SE38, F8), like Run As → ABAP Application in Eclipse. */
+  async function runInGui(t: Tab, forDebug = false): Promise<boolean> {
+    const tools = opts.tools;
+    if (!tools) { toast(runBlocker(t) || 'SAP GUI is only available in the desktop app', 'warn', 6000); return false; }
+    if (isDirty(t) && !(await save(t))) return false;
+    const st = await backend.state(t.conn, t.ref).catch(() => t.ref);
+    if (st.inactive) {
+      const ok = await confirmBox(`Activate ${t.ref.name} first?`, `SAP GUI runs the active version of ${esc(t.ref.name)}; your saved changes are not active yet.`, 'Activate and run');
+      if (!ok) return false;
+      await activate(t);
+      if ((await backend.state(t.conn, t.ref).catch(() => t.ref)).inactive) return false;
+    }
+    try {
+      // reports: SE38 and execute; function modules: SE37 and its test screen
+      await tools.openSapGui(conn(), t.ref.type === 'FUNC' ? `*SE37 RS38L-NAME=${t.ref.name};DYNP_OKCODE=WB_EXEC` : `*SE38 RS38M-PROGRAMM=${t.ref.name};DYNP_OKCODE=STRT`);
+      toast(forDebug ? `Opened ${t.ref.name} in SAP GUI. It stops here at your breakpoint.` : `Opened ${t.ref.name} in SAP GUI`, 'ok', 5000);
+      return true;
+    } catch (e) { fail(e, 'Opening SAP GUI'); return false; }
+  }
+
   /** Returns false when no debug session started, so the caller runs normally. */
   async function startDebug(t: Tab): Promise<boolean> {
-    if (t.ref.type === 'PROG' && !conn().runReports) {
-      // a report on a real system starts in SAP GUI: wait for it like Eclipse does
-      return !!(await listenForDebug(() => backend.debugStart(t.conn, t.ref, allBreakpoints())));
+    if ((t.ref.type === 'PROG' && !conn().runReports) || t.ref.type === 'FUNC') {
+      // a report or function module on a real system runs in SAP GUI: listen like Eclipse does, then start it there
+      const waiting = listenForDebug(() => backend.debugStart(t.conn, t.ref, allBreakpoints()));
+      if (opts.tools && conn().kind === 's4') setTimeout(() => { if (S.listening) runInGui(t, true); }, 700);
+      return !!(await waiting);
     }
     const r = await busy('Starting debugger', async () => {
       const st = await backend.debugStart(t.conn, t.ref, allBreakpoints());
@@ -2070,7 +2246,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
 
   // ------------------------------------------------------------------ create, delete, packages
   const NEW_TYPES: { group: string; types: ObjType[] }[] = [
-    { group: 'Source Code', types: ['CLAS', 'INTF', 'PROG'] },
+    { group: 'Source Code', types: ['CLAS', 'INTF', 'PROG', 'FUGR', 'FUNC'] },
     { group: 'Dictionary', types: ['TABL', 'DTEL', 'DOMA', 'TTYP'] },
     { group: 'Core Data Services', types: ['DDLS', 'DDLX', 'DCLS', 'BDEF'] },
     { group: 'Business Services', types: ['SRVD', 'SRVB', 'HTTP', 'EVTB'] },
@@ -2097,7 +2273,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       <p class="note" id="noFormNote" hidden></p>
       <label class="field" id="noBindRow"><span>Binding type</span><select id="noBind"><option value="V4|UI">OData V4 · UI</option><option value="V4|Web API">OData V4 · Web API</option><option value="V2|UI">OData V2 · UI</option><option value="V2|Web API">OData V2 · Web API</option></select></label>
       <p class="form-err" id="noErr" hidden></p>`;
-    const REF_LABEL: Partial<Record<ObjType, string>> = { DDLS: 'Data source (table or view)', DDLX: 'Annotated CDS entity', DCLS: 'Protected CDS entity', BDEF: 'Root CDS entity', SRVD: 'CDS entity to expose', SRVB: 'Service definition' };
+    const REF_LABEL: Partial<Record<ObjType, string>> = { DDLS: 'Data source (table or view)', DDLX: 'Annotated CDS entity', DCLS: 'Protected CDS entity', BDEF: 'Root CDS entity', SRVD: 'CDS entity to expose', SRVB: 'Service definition', FUNC: 'Function group' };
     const res = await modal<{ type: ObjType; name: string; desc: string; pkg: string; extra: CreateExtra }>('New ABAP object', body,
       [{ label: 'Cancel', value: null }, { label: 'Create', kind: 'primary', submit: true }], (root, close) => {
         const nameEl = $<HTMLInputElement>('#noName', root);
@@ -2118,7 +2294,15 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
         sync(true);
         typeEl.onchange = () => sync();
         nameEl.oninput = () => { nameEl.value = nameEl.value.toUpperCase(); };
-        refEl.oninput = () => { refEl.value = refEl.value.toUpperCase(); };
+        const groupPkg = () => {
+          // a function module is in the package of its function group
+          if (typeEl.value !== 'FUNC') return;
+          const g = allObjs().find(o => o.type === 'FUGR' && o.name === refEl.value.trim());
+          if (g?.pkg) $<HTMLInputElement>('#noPkg', root).value = g.pkg;
+        };
+        refEl.oninput = () => { refEl.value = refEl.value.toUpperCase(); groupPkg(); };
+        typeEl.addEventListener('change', groupPkg);
+        groupPkg();
         ($('#modalForm', root) as HTMLFormElement).onsubmit = (ev) => {
           ev.preventDefault();
           const type = typeEl.value as ObjType;
@@ -2134,18 +2318,24 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
           else if (!pkg) m = 'Enter a package.';
           else if (!desc) m = 'Enter a description.';
           else if (type === 'SRVB' && !ref) m = 'Enter the service definition the binding exposes.';
+          else if (type === 'FUNC' && !ref) m = 'Enter the function group the function module goes into.';
+          else if (type === 'FUNC' && allObjs().some(o => o.type === 'FUNC' && o.name === name)) m = `${name} already exists.`;
           if (m) { err.hidden = false; err.textContent = m; return; }
           const [v, cat] = $<HTMLSelectElement>('#noBind', root).value.split('|');
-          close({ type, name, desc, pkg, extra: { referencedObject: ref || undefined, serviceDefinition: type === 'SRVB' ? ref : undefined, bindingType: v as 'V2' | 'V4', category: cat as 'UI' | 'Web API' } });
+          close({ type, name, desc, pkg, extra: { referencedObject: ref || undefined, serviceDefinition: type === 'SRVB' ? ref : undefined, functionGroup: type === 'FUNC' ? ref : undefined, bindingType: v as 'V2' | 'V4', category: cat as 'UI' | 'Web API' } });
         };
       });
     if (!res) return;
     try {
-      const uri = uriFor(res.type, res.name);
+      const uri = newObjectUri(res.type, res.name, res.extra);
       const tr = await transportForNew(res.name, res.pkg, uri);
       if (tr === null) return;
       const ref = await busy(`Creating ${res.name}`, () => backend.createObject(S.conn, res.type, res.name, res.desc, res.pkg, tr, res.extra));
       if (!ref) return;
+      if (res.type === 'FUNC') {
+        // shown under its function group: read the group's parts again
+        for (const k of [...progIncl.keys()]) if (k.endsWith(`:${uriFor('FUGR', res.extra.functionGroup || '')}`)) progIncl.delete(k);
+      }
       await revealPkg(res.pkg);
       if (c.transports) S.transports = await backend.transports(S.conn).catch(() => S.transports);
       toast(`Created ${res.name}`, 'ok');
@@ -2262,42 +2452,9 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     if (!ext('rapgen')) { toast('Enable the RAP Generator extension first', 'warn'); return; }
     const tables = allObjs().filter(o => o.type === 'TABL');
     const preset = table || tables[0];
-    const base0 = (preset?.name || '').replace(/^Z_?|^Y_?/, '');
-    const body = `
-      <p class="note">Creates a managed RAP business object with an OData V4 UI service for a database table, like <i>Generate ABAP Repository Objects</i> in Eclipse. The sources are starting points to refine.</p>
-      <div class="two"><label class="field"><span>Database table</span><input id="rgTable" list="rgTables" value="${esc(preset?.name || '')}" autocomplete="off" spellcheck="false"><datalist id="rgTables">${tables.map(t => `<option value="${esc(t.name)}">`).join('')}</datalist></label>
-      <label class="field"><span>Business object name</span><input id="rgBase" value="${esc(base0)}" autocomplete="off" spellcheck="false"></label></div>
-      <div class="two"><label class="field"><span>Description</span><input id="rgDesc" value="${esc(preset?.desc || '')}" maxlength="60"></label>
-      <label class="field"><span>Package</span><input id="rgPkg" list="rgPkgs" value="${esc(preset?.pkg || conn().favoritePackages[0] || '')}" autocomplete="off" spellcheck="false"><datalist id="rgPkgs">${knownPackages().map(p => `<option value="${esc(p)}">`).join('')}</datalist></label></div>
-      <label class="check"><input type="checkbox" id="rgV2"><span>OData V2 instead of V4</span></label>
-      <label class="check"><input type="checkbox" id="rgPub" checked><span>Publish the service binding after activation</span></label>
-      <h4 class="sub">Objects</h4><ul class="plan" id="rgPlan"></ul>
-      <p class="form-err" id="rgErr" hidden></p>`;
-    const res = await modal<{ table: string; base: string; desc: string; pkg: string; v2: boolean; pub: boolean }>('Generate RAP service', body,
-      [{ label: 'Cancel', value: null }, { label: 'Generate', kind: 'primary', submit: true }], (root, close) => {
-        const base = $<HTMLInputElement>('#rgBase', root);
-        const tbl = $<HTMLInputElement>('#rgTable', root);
-        const plan = $('#rgPlan', root);
-        const draw = () => {
-          base.value = base.value.toUpperCase();
-          const n = rapNames(base.value || 'X');
-          const v2 = $<HTMLInputElement>('#rgV2', root).checked;
-          const rows: [ObjType, string, string][] = [['DDLS', n.root, 'root view entity'], ['DDLS', n.proj, 'projection view'], ['DDLX', n.proj, 'metadata extension'], ['BDEF', n.root, 'behavior definition (managed)'], ['BDEF', n.proj, 'behavior projection'], ['SRVD', n.srvd, 'service definition'], ['SRVB', v2 ? n.srvb.replace(/_O4$/, '_O2') : n.srvb, `service binding, OData ${v2 ? 'V2' : 'V4'} UI`]];
-          plan.innerHTML = rows.map(([t, nm, d]) => `<li>${glyph(t)}<code>${esc(nm)}</code><small>${esc(d)}</small></li>`).join('');
-          const v = validateRap(base.value);
-          const err = $('#rgErr', root); err.hidden = !v; err.textContent = v || '';
-        };
-        draw();
-        base.oninput = draw; ($('#rgV2', root) as HTMLInputElement).onchange = draw;
-        tbl.oninput = () => { tbl.value = tbl.value.toUpperCase(); if (!base.dataset.touched) base.value = tbl.value.replace(/^Z_?|^Y_?/, ''); draw(); };
-        base.addEventListener('keydown', () => { base.dataset.touched = '1'; });
-        ($('#modalForm', root) as HTMLFormElement).onsubmit = (ev) => {
-          ev.preventDefault();
-          const e = validateRap(base.value) || (!tbl.value ? 'Enter a database table' : '') || (!$<HTMLInputElement>('#rgPkg', root).value ? 'Enter a package' : '');
-          if (e) { const err = $('#rgErr', root); err.hidden = false; err.textContent = e; return; }
-          close({ table: tbl.value.trim(), base: base.value.trim(), desc: $<HTMLInputElement>('#rgDesc', root).value.trim() || base.value, pkg: $<HTMLInputElement>('#rgPkg', root).value.trim().toUpperCase(), v2: $<HTMLInputElement>('#rgV2', root).checked, pub: $<HTMLInputElement>('#rgPub', root).checked });
-        };
-      }, true);
+    const form = rapFormDialog({ preset, tables, packages: knownPackages(), defaultPkg: conn().favoritePackages[0] || '' });
+    const res = await modal<RapFormResult>('Generate RAP service', form.body,
+      [{ label: 'Cancel', value: null }, { label: 'Generate', kind: 'primary', submit: true }], form.mount, true);
     if (!res) return;
     const tref = allObjs().find(o => o.type === 'TABL' && o.name === res.table.toUpperCase()) || { uri: uriFor('TABL', res.table), name: res.table.toUpperCase(), type: 'TABL' as ObjType, pkg: res.pkg, desc: '' };
     let fields;
@@ -2415,11 +2572,41 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       Time: new Date().toISOString(),
     }, id);
   }
+  /** A GitHub issue with the version and an anonymized connection log, checked by the user before it opens. */
+  async function reportProblem() {
+    const c = conn();
+    const hosts = c.kind === 'runner' || c.auth === 'rfc' ? null : systemHosts(c.url);
+    const words = [c.url, hosts?.api, hosts?.ui, c.ashost, c.saprouter, c.user, c.rfcSdk, c.label, c.builtin ? undefined : c.sid];
+    const body = anonymize([
+      '**What happened**', '', '(Describe what you did and what you expected.)', '',
+      '**Environment**', '',
+      `- Nusa Studio ${APP_VERSION}${opts.prototype ? ' (browser prototype)' : ''}`,
+      `- ${navigator.userAgent}`,
+      `- System: ${KIND_LABEL[c.kind]}, logon: ${AUTH_LABEL[c.auth]}`,
+      '', '**Diagnostics** (host names, user and routes are hidden)', '', '```', diagText(S.conn), '```',
+    ].join('\n'), words);
+    const res = await modal<{ text: string; title: string }>('Report a problem', `<p class="note">This opens a new issue on GitHub. The issue is public: check the text below and remove anything you do not want to share. Host names, your user and the SAProuter route are already replaced.</p>
+      <label class="field"><span>Title</span><input id="rpTitle" maxlength="120" placeholder="Short summary" autocomplete="off"></label>
+      <label class="field"><span>Text</span><textarea id="rpBody" rows="14" spellcheck="false">${esc(body)}</textarea></label>`,
+      [{ label: 'Cancel', value: null }, { label: 'Copy text', kind: 'ghost', value: 'copy' }, { label: 'Open GitHub issue', kind: 'primary', submit: true }], (root, close) => {
+        ($('#modalForm', root) as HTMLFormElement).onsubmit = (ev) => {
+          ev.preventDefault();
+          close({ title: $<HTMLInputElement>('#rpTitle', root).value.trim(), text: $<HTMLTextAreaElement>('#rpBody', root).value });
+        };
+        root.querySelector<HTMLButtonElement>('.modal-actions [data-i="1"]')!.onclick = (ev) => { ev.preventDefault(); copy($<HTMLTextAreaElement>('#rpBody', root).value, 'Copied the report'); };
+      }, true);
+    if (!res || typeof res !== 'object') return;
+    const { url, cut } = issueUrl(REPORT_REPO, res.title || 'Problem report', res.text);
+    if (cut) await copy(res.text, 'The report is long: the full text is on the clipboard, paste it into the issue');
+    openUrl(url);
+  }
+
   async function showDiag(id: string) {
     const text = diagText(id);
     const r = await modal<string>('Connection log', `<p class="note">Requests to this system since the app started. Passwords, tickets and tokens are never recorded.</p><pre class="diag">${esc(text)}</pre>`,
-      [{ label: 'Close', value: null }, { label: 'Copy', value: 'copy', kind: 'primary' }], undefined, true);
+      [{ label: 'Close', value: null }, { label: 'Report a problem…', value: 'report', kind: 'ghost' }, { label: 'Copy', value: 'copy', kind: 'primary' }], undefined, true);
     if (r === 'copy') await copy(text, 'Copied the diagnostics');
+    if (r === 'report') await reportProblem();
   }
   async function eclipseGuide() {
     store.set('nusa-adt-eclipse-seen', '1');
@@ -2433,117 +2620,9 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
 
   async function systemForm(existing?: Connection): Promise<void> {
     const e = existing;
-    const kind0 = e?.kind || 's4';
-    const auth0 = e?.auth || 'basic';
-    const body = `
-      <label class="field"><span>System type</span><select id="sfKind" ${e ? 'disabled' : ''}>
-        <option value="s4" ${kind0 === 's4' ? 'selected' : ''}>S/4HANA or NetWeaver (on-premise)</option>
-        <option value="s4cloud" ${kind0 === 's4cloud' ? 'selected' : ''}>S/4HANA Cloud Public Edition</option>
-        <option value="btp" ${kind0 === 'btp' ? 'selected' : ''}>SAP BTP ABAP Environment</option>
-        <option value="runner" ${kind0 === 'runner' ? 'selected' : ''}>Local ABAP runner</option></select></label>
-      <label class="field" id="sfUrlField"><span>System URL</span><input id="sfUrl" value="${esc(e?.url || '')}" autocomplete="off" spellcheck="false"><small class="hint" id="sfUrlHint"></small></label>
-      <div class="two" data-k="s4 runner"><label class="field"><span>System ID</span><input id="sfSid" maxlength="8" value="${esc(e?.sid || '')}" placeholder="S4D" autocomplete="off"></label>
-        <label class="field" data-k="s4"><span>Client</span><input id="sfClient" maxlength="3" inputmode="numeric" value="${esc(e?.client || '100')}"></label></div>
-      <div class="two" data-k="s4 s4cloud btp">
-        <label class="field" data-k="s4 btp"><span>Logon</span><select id="sfAuth"></select></label>
-        <label class="field"><span>Language</span><input id="sfLang" maxlength="2" value="${esc(e?.language || 'EN')}"></label></div>
-      <div data-a="rfc" class="rfc-box">
-        <label class="field"><span>Application server</span><input id="sfHost" value="${esc(e?.ashost || '')}" placeholder="10.27.1.2" autocomplete="off" spellcheck="false"></label>
-        <div class="two"><label class="field"><span>Instance number</span><input id="sfSysnr" maxlength="2" inputmode="numeric" value="${esc(e?.sysnr || '')}" placeholder="00"></label>
-          <label class="field"><span>SAProuter string <small>optional</small></span><input id="sfRouter" value="${esc(e?.saprouter || '')}" placeholder="/H/saprouter.example.com/S/3299" autocomplete="off" spellcheck="false"></label></div>
-        <small class="hint">The same values as the entry in SAP GUI Logon (Properties → Connection). A full route that ends with the server, such as /H/router/S/3299/H/10.27.1.2/S/3220, is split for you.</small>
-        <label class="field"><span>SAP NW RFC SDK folder</span><input id="sfSdk" value="${esc(e?.rfcSdk || 'C:\\SAP\\nwrfcsdk')}" autocomplete="off" spellcheck="false"><small class="hint">The folder you extracted from the SAP Software Center download (it contains lib\\sapnwrfc.dll). SAP does not allow apps to ship it.</small></label>
-      </div>
-      <label class="field" data-a="basic sso rfc"><span id="sfUserLabel">User</span><input id="sfUser" value="${esc(e?.user || '')}" autocomplete="off" spellcheck="false"></label>
-      <label class="field" data-a="basic rfc"><span>Password</span><input id="sfPw" type="password" autocomplete="off" placeholder="${e && (e.auth === 'basic' || e.auth === 'rfc') ? 'Leave empty to keep the saved password' : ''}"></label>
-      <label class="field" data-a="oauth"><span>Service key (JSON)</span><textarea id="sfKey" rows="6" spellcheck="false" placeholder='${e && e.auth === 'oauth' ? 'Leave empty to keep the saved key' : '{ "url": "…", "uaa": { "url": "…", "clientid": "…", "clientsecret": "…" } }'}'></textarea></label>
-      <p class="note" id="sfNote"></p>
-      <label class="field"><span>Name in the list <small>optional</small></span><input id="sfLabel" value="${esc(e?.label || '')}" maxlength="60"></label>
-      <label class="check" data-k="s4 runner"><input type="checkbox" id="sfSelf" ${e?.allowSelfSigned ? 'checked' : ''}><span>Accept a self-signed certificate (development systems only)</span></label>
-      <p class="form-err" id="sfErr" hidden></p>`;
-    const result = await modal<{ c: Connection; secret?: string }>(e ? `Edit ${e.sid}` : 'Add system', body,
-      [{ label: 'Cancel', value: null }, { label: e ? 'Save' : 'Add and connect', kind: 'primary', submit: true }], (root, close) => {
-        const kindEl = $<HTMLSelectElement>('#sfKind', root);
-        const authEl = $<HTMLSelectElement>('#sfAuth', root);
-        const HINT: Record<Connection['kind'], string> = {
-          s4: 'For example https://vhcals4hci.dummy.nodomain:44300. The HTTPS port is in transaction SMICM → Services.',
-          s4cloud: 'The address you open in the browser, such as https://my123456.s4hana.cloud.sap, or its API URL https://my123456-api.s4hana.cloud.sap. Links with /ui#Shell-home work too.',
-          btp: 'The URL of the ABAP environment instance, for example https://1a2b3c4d.abap.eu10.hana.ondemand.com (the abap-web launchpad address works too).',
-          runner: 'For example http://localhost:7777.',
-        };
-        const AUTHS: Record<Connection['kind'], [Connection['auth'], string][]> = {
-          s4: [['basic', 'User and password (HTTPS)'], ['rfc', 'SAP GUI / RFC (SAProuter)'], ['sso', 'Browser logon (SAML single sign-on)']],
-          s4cloud: [['sso', 'Browser logon']], btp: [['sso', 'Browser logon with the system URL'], ['oauth', 'Service key']], runner: [['none', 'None']],
-        };
-        const sync = () => {
-          const k = kindEl.value as Connection['kind'];
-          const prev = authEl.value || auth0;
-          authEl.innerHTML = AUTHS[k].map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
-          authEl.value = AUTHS[k].some(([v]) => v === prev) ? prev : AUTHS[k][0][0];
-          const a = authEl.value as Connection['auth'];
-          root.querySelectorAll<HTMLElement>('[data-k]').forEach(el => { el.hidden = !(el.dataset.k as string).split(' ').includes(k); });
-          root.querySelectorAll<HTMLElement>('[data-a]').forEach(el => { el.hidden = !(el.dataset.a as string).split(' ').includes(a) || k === 'runner'; });
-          $('#sfUrlHint', root).textContent = HINT[k];
-          $('#sfUrlField', root).hidden = a === 'rfc';
-          $('#sfSelf', root).closest('label')!.hidden = k === 'runner' ? false : k !== 's4' || a === 'rfc';
-          $('#sfUserLabel', root).textContent = a === 'sso' ? 'User ID (optional, shows your transport requests)' : 'User';
-          $<HTMLInputElement>('#sfUrl', root).placeholder = k === 's4cloud' ? 'https://my123456.s4hana.cloud.sap' : k === 'btp' ? 'https://<id>.abap.<region>.hana.ondemand.com' : k === 'runner' ? 'http://localhost:7777' : 'https://host:44300';
-          $('#sfNote', root).textContent = a === 'sso' ? 'Your browser opens for the logon, the same way Eclipse does it. Nusa Studio receives a logon ticket on http://localhost and keeps it for this session. Your user needs the developer role (SAP_BR_DEVELOPER on SAP cloud systems).'
-            : a === 'oauth' ? 'Create the service key in the SAP BTP cockpit on your ABAP environment instance. It is stored in the operating system keychain.'
-              : a === 'basic' ? 'The password is stored in the operating system keychain, never in a file.'
-                : a === 'rfc' ? 'Eclipse connects to on-premise systems this way: over RFC, through the SAProuter if there is one, so no HTTPS port has to be open. The password is stored in the operating system keychain. Several wrong passwords lock the user, so Nusa Studio stops after the first rejected logon.' : '';
-        };
-        sync();
-        kindEl.onchange = sync; authEl.onchange = sync;
-        const routerEl = $<HTMLInputElement>('#sfRouter', root);
-        routerEl.onchange = () => {
-          const r = splitGuiRoute(routerEl.value);
-          routerEl.value = r.saprouter;
-          if (r.ashost) { $<HTMLInputElement>('#sfHost', root).value = r.ashost; $<HTMLInputElement>('#sfSysnr', root).value = r.sysnr || ''; }
-        };
-        ($('#modalForm', root) as HTMLFormElement).onsubmit = (ev) => {
-          ev.preventDefault();
-          const k = kindEl.value as Connection['kind'];
-          const a = authEl.value as Connection['auth'];
-          const route = splitGuiRoute($<HTMLInputElement>('#sfRouter', root).value);
-          const ashost = (route.ashost || $<HTMLInputElement>('#sfHost', root).value).trim();
-          const sysnr = (route.sysnr || $<HTMLInputElement>('#sfSysnr', root).value).trim().padStart(2, '0');
-          const rfcSdk = $<HTMLInputElement>('#sfSdk', root).value.trim();
-          const url = a === 'rfc' ? `rfc://${ashost}:${sysnr}` : systemUrl(k, $<HTMLInputElement>('#sfUrl', root).value);
-          let sid = $<HTMLInputElement>('#sfSid', root).value.trim().toUpperCase();
-          const client = $<HTMLInputElement>('#sfClient', root).value.trim();
-          const user = $<HTMLInputElement>('#sfUser', root).value.trim().toUpperCase();
-          const pw = $<HTMLInputElement>('#sfPw', root).value;
-          const key = $<HTMLTextAreaElement>('#sfKey', root).value.trim();
-          const err = $('#sfErr', root);
-          const bad = (m: string) => { err.hidden = false; err.textContent = m; };
-          if (a === 'rfc') {
-            if (!/^[\w.-]+$/.test(ashost)) return bad('Enter the application server, for example 10.27.1.2 or a host name.');
-            if (!/^\d{2}$/.test(sysnr)) return bad('The instance number has two digits, for example 00 or 20.');
-            if (route.saprouter && !/^\/H\//i.test(route.saprouter)) return bad('A SAProuter string starts with /H/, for example /H/saprouter.example.com/S/3299.');
-            if (!rfcSdk) return bad('Choose the folder of the SAP NW RFC SDK.');
-          } else if (!/^https?:\/\/[^\s/]+/.test(url)) return bad('Enter the system URL, starting with https://');
-          if (a !== 'rfc' && k !== 'runner' && /^http:\/\//.test(url) && !/localhost|127\.0\.0\.1/.test(url)) return bad('SAP systems need https:// for logons.');
-          if (k === 's4cloud' || k === 'btp') {
-            if (!sid) sid = (url.replace(/^https?:\/\//, '').split(/[.:]/)[0].replace(/-api$/i, '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8)) || (k === 'btp' ? 'BTP' : 'S4HC');
-          } else if (!/^[A-Z0-9]{3,8}$/.test(sid)) return bad('Enter the system ID, for example S4D.');
-          if (k === 's4' && !/^\d{3}$/.test(client)) return bad('The client has three digits, for example 100.');
-          if ((a === 'basic' || a === 'rfc') && !user) return bad('Enter your user.');
-          if ((a === 'basic' || a === 'rfc') && !pw && !(e && e.auth === a)) return bad('Enter your password.');
-          if (a === 'oauth' && !key && !(e && e.auth === 'oauth')) return bad('Paste the service key.');
-          if (a === 'oauth' && key) { try { const j = JSON.parse(key); if (!j.uaa?.url || !j.uaa?.clientid) throw new Error('uaa'); } catch { return bad('This is not a service key. It needs a "uaa" section with url, clientid and clientsecret.'); } }
-          const c: Connection = {
-            id: e?.id || `${sid.toLowerCase()}-${Date.now().toString(36)}`, kind: k, sid, client: k === 's4' ? client : k === 'runner' ? '000' : '',
-            user: a === 'basic' || a === 'sso' || a === 'rfc' ? user : k === 'runner' ? 'NUSA' : '', url, language: ($<HTMLInputElement>('#sfLang', root).value.trim() || 'EN').toUpperCase(),
-            auth: a, abapVersion: k === 'runner' ? 'runner' : k === 's4' ? 'standard' : 'cloud',
-            favoritePackages: e?.favoritePackages || (k === 'runner' ? ['$TMP'] : []), transports: k !== 'runner', runReports: k === 'runner' ? true : undefined,
-            label: $<HTMLInputElement>('#sfLabel', root).value.trim() || undefined,
-            allowSelfSigned: a !== 'rfc' && $<HTMLInputElement>('#sfSelf', root).checked || undefined,
-            ...(a === 'rfc' ? { ashost, sysnr, saprouter: route.saprouter || undefined, rfcSdk } : {}),
-          };
-          close({ c, secret: a === 'basic' || a === 'rfc' ? (pw || undefined) : a === 'oauth' ? (key || undefined) : undefined });
-        };
-      });
+    const form = systemFormDialog(e, opts.tools, er => fail(er, 'Choosing the folder'));
+    const result = await modal<{ c: Connection; secret?: string }>(e ? `Edit ${e.sid}` : 'Add system', form.body,
+      [{ label: 'Cancel', value: null }, { label: e ? 'Save' : 'Add and connect', kind: 'primary', submit: true }], form.mount);
     if (!result) return;
     try {
       await backend.saveConnection(result.c, result.secret);
@@ -2613,6 +2692,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     if (S.debug && !S.debug.done) await stopDebug();
     S.conn = id; store.set('nusa-adt-conn', id);
     S.problems = []; S.atc = null; S.unit = null; S.where = null; S.output = null; S.searchRes = []; S.searchQ = ''; S.git = null;
+    S.traces = null; S.traceSel = null; S.dumps = null; S.dumpSel = null;
     S.sys[id] = undefined;
     const t = cur();
     if (t && t.view === 'source') await showTab(t); else { swapping = true; cm.swapDoc(placeholderDoc); swapping = false; renderAll(); }
@@ -2814,6 +2894,10 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     { id: 'preview', title: 'Data Preview of Table or CDS View…', run: () => previewPrompt(), when: () => ext('preview') },
     { id: 'sql', title: 'Open SQL Console', key: 'Ctrl+Alt+F8', run: () => openPreview(), when: () => ext('preview') },
     { id: 'unit', title: 'Run ABAP Unit Tests', key: 'Ctrl+Shift+F10', run: unit },
+    { id: 'profile', title: 'Profile As ABAP Application (Trace and Run)', key: 'Ctrl+Shift+F9', run: profile },
+    { id: 'traces', title: 'Profiler: Show ABAP Traces', run: () => { S.traceSel = null; openPanel('traces'); renderPanel(); } },
+    { id: 'trace-next', title: 'Profiler: Trace My Next Run', run: () => traceNextRun() },
+    { id: 'dumps', title: 'Runtime Errors (ST22)', run: () => showDumps() },
     { id: 'atc', title: 'Run ATC Checks', key: 'Ctrl+Shift+F2', run: () => atc() },
     { id: 'complete', title: 'Trigger Code Completion', key: 'Ctrl+Space', run: complete },
     { id: 'navigate', title: 'Navigate to Definition', key: 'F3', run: navigate },
@@ -2826,12 +2910,15 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     { id: 'extract', title: 'Extract Method…', key: 'Alt+Shift+M', run: extractMethod },
     { id: 'compare-active', title: 'Compare With: Active Version', run: () => compareActive() },
     { id: 'compare-history', title: 'Compare With: Local History…', run: () => compareHistory() },
+    { id: 'compare-revision', title: 'Compare With: Version History in the System…', run: () => compareRevision() },
+    { id: 'compare-system', title: 'Compare With: Other System…', run: () => compareSystem() },
     { id: 'next-match', title: 'Add Selection to Next Match', key: 'Ctrl+D', run: () => { if (curSrc()) { selectNextOccurrence(cm); cm.focus(); } } },
     { id: 'line-up', title: 'Move Line Up', key: 'Alt+Up', run: () => { if (curSrc()) moveLines(cm, -1); } },
     { id: 'line-down', title: 'Move Line Down', key: 'Alt+Down', run: () => { if (curSrc()) moveLines(cm, 1); } },
     { id: 'line-copy', title: 'Copy Line Down', key: 'Shift+Alt+Down', run: () => { if (curSrc()) duplicateLines(cm, 1); } },
     { id: 'line-delete', title: 'Delete Line', key: 'Ctrl+Shift+K', run: () => { if (curSrc()) deleteLines(cm); } },
     { id: 'diag', title: 'Show Connection Log (Diagnostics)', run: () => showDiag(S.conn) },
+    { id: 'report', title: 'Help: Report a Problem…', run: () => reportProblem() },
     { id: 'eclipse', title: 'Help: Coming from Eclipse ADT', run: () => eclipseGuide() },
     { id: 'update', title: 'Check for Updates…', run: () => checkUpdates(true), when: () => !!opts.updates },
     { id: 'rapgen', title: 'Generate RAP Service from Table…', run: () => rapGenerator(), when: () => ext('rapgen') },
@@ -2893,6 +2980,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
   const fuzzy = (q: string, s: string) => { q = q.toLowerCase(); s = s.toLowerCase(); let i = 0; for (const ch of s) if (ch === q[i]) i++; return i === q.length; };
 
   let palFilled = '\u0000';
+  let palSeq = 0;
   async function fillPalette() {
     const raw = $<HTMLInputElement>('#palInput').value;
     palFilled = raw;
@@ -2913,7 +3001,9 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
     } else {
       let res: ObjRef[] = [];
       let err = '';
+      const seq = ++palSeq;
       try { res = q ? await backend.search(S.conn, q) : allObjs(); } catch (e) { err = msg(e); }
+      if (seq !== palSeq || $<HTMLInputElement>('#palInput').value !== raw) return;   // typed on: a newer search is running
       palItems = res.map(o => ({ label: o.name, sub: `${TYPE_INFO[o.type].label} · ${o.pkg} · ${o.desc}`, glyph: o.type, go: () => openObj(o) }));
       $('#palHint').innerHTML = err ? `<span class="sys-err">Search failed: ${esc(err)}</span>` : `Objects in <b>${esc(conn().sid)}</b> · type <kbd>&gt;</kbd> for commands`;
     }
@@ -2963,6 +3053,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       ...(o.type === 'SRVB' ? [{ label: 'Open Service Binding', run: () => openObj(o) }] : []),
       ...(o.type === 'DDLS' ? [{ label: 'New Metadata Extension…', run: () => newObject(o.pkg, 'DDLX', o.name) }, { label: 'New Service Definition…', run: () => newObject(o.pkg, 'SRVD', o.name) }] : []),
       ...(o.type === 'SRVD' ? [{ label: 'New Service Binding…', run: () => newObject(o.pkg, 'SRVB', o.name) }] : []),
+      ...(o.type === 'FUGR' ? [{ label: 'New Function Module…', run: () => newObject(o.pkg, 'FUNC', o.name) }] : []),
       { sep: true },
       { label: 'Activate', run: async () => { const st = await backend.state(S.conn, o); if (!st.inactive) { toast(`${o.name} is already active`); return; } await busy(`Activating ${o.name}`, async () => { const r = await backend.activate(S.conn, [o]); setProblems(o.uri, r.problems); if (!r.ok) { openPanel('problems'); throw new Error('see Problems'); } toast(`Activated ${o.name}`, 'ok'); }); await refreshPkg(o.pkg); renderAll(); } },
       ...(TYPE_INFO[o.type].editor !== 'form' ? [{ label: 'Run ATC Checks', run: () => atc(o) }] : []),
@@ -3013,6 +3104,8 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       { sep: true },
       { label: 'Compare With Active Version', run: () => compareActive() },
       { label: 'Compare With Local History…', run: () => compareHistory() },
+      { label: 'Compare With Version History…', run: () => compareRevision(), disabled: isTextInclude(t.include) },
+      { label: 'Compare With Other System…', run: () => compareSystem() },
       { sep: true },
       { label: 'Format Document', key: 'Shift+Alt+F', run: format },
       ...(abap && ext('cleaner') ? [{ label: 'Clean Up', key: 'Ctrl+4', run: cleanUp }] : []),
@@ -3068,7 +3161,7 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
         const id = d.id as string;
         if (S.collapsed.has(id)) S.collapsed.delete(id); else S.collapsed.add(id);
         persistTree();
-        el.closest('.node')?.classList.toggle('closed');
+        el.closest('.node, .tr-group')?.classList.toggle('closed');
         el.setAttribute('aria-expanded', String(!S.collapsed.has(id)));
         break;
       }
@@ -3092,6 +3185,18 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
         persistTree(); renderSide(); break;
       // single click: preview tab; double click (second click of it): keep the tab open
       case 'open': { const o = objByUri(d.uri as string) || S.searchRes.find(x => x.uri === d.uri); if (o) await openObj(o, 'main', undefined, el.classList.contains('row') && (e as MouseEvent).detail < 2); break; }
+      case 'prog-toggle': {
+        const id = d.id as string;
+        if (S.openSub.has(id)) S.openSub.delete(id); else { S.openSub.add(id); progIncl.delete(id); }
+        persistTree();
+        renderSide();
+        break;
+      }
+      case 'open-ref': {
+        const ref = objByUri(d.uri as string) || { uri: d.uri as string, name: d.name as string, type: d.type as ObjType, pkg: '', desc: '' };
+        await openObj(ref, 'main', undefined, (e as MouseEvent).detail < 2);
+        break;
+      }
       case 'open-search': { const o = S.searchRes.find(x => x.uri === d.uri); if (o) await openObj(o, 'main', undefined, (e as MouseEvent).detail < 2); break; }
       case 'goto': await gotoLoc({ uri: d.uri as string, include: d.inc as Include, line: +(d.line as string) }); break;
       case 'dbg-frame': await debugFrame(+(d.i as string)); break;
@@ -3116,6 +3221,11 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       case 'xf-add-row': {
         const t = cur(); const doc = t && docs.get(docKey(t, 'main'));
         if (doc) { try { doc.setValue(addLayoutRow(doc.getValue(), d.at as string, d.row as string, (d.cols as string).split(','), (d.num as string) || undefined)); renderPane(); } catch (er) { fail(er); } }
+        break;
+      }
+      case 'xf-add-msg': {
+        const t = cur(); const doc = t && docs.get(docKey(t, 'main'));
+        if (doc) { try { doc.setValue(addMessageRow(doc.getValue())); renderPane(); setTimeout(() => { const ins = document.querySelectorAll<HTMLInputElement>('.of-table.msgs tbody tr:last-child input[maxlength="73"]'); ins[ins.length - 1]?.focus(); }, 0); } catch (er) { fail(er); } }
         break;
       }
       case 'of-goto': document.getElementById(d.id as string)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); break;
@@ -3143,6 +3253,17 @@ export async function startApp(backend: Backend, opts: { brand?: string; prototy
       case 'tr-remove': await removeTrObjects(d.id as string); break;
       case 'tr-move': await moveTrObjects(d.id as string); break;
       case 'tr-unpick': trPick.delete(d.id as string); renderSide(); break;
+      case 'trc-request': await traceNextRun(); break;
+      case 'trc-profile': await profile(); break;
+      case 'trc-refresh': S.traceSel = null; await loadTraces(); break;
+      case 'trc-back': S.traceSel = null; renderPanel(); break;
+      case 'dmp-refresh': await loadDumps(); break;
+      case 'dmp-open': await openDump(d.id as string); break;
+      case 'dmp-back': S.dumpSel = null; renderPanel(); break;
+      case 'dmp-mine': S.dumpsMine = (el as HTMLInputElement).checked; store.set('nusa-adt-dumps-all', S.dumpsMine ? '' : '1'); renderPanel(); break;
+      case 'trc-open': await openTrace(d.id as string); break;
+      case 'trc-del': { const id = d.id as string; if (await confirmBox('Delete this trace?', 'The trace file is removed from the system.', 'Delete', true)) { await busy('Deleting the trace', () => backend.traceDelete(S.conn, id)); await loadTraces(); } break; }
+      case 'tr-tab': S.trTab = d.id as Transport['status']; renderSide(); break;
       case 'dp-run': await runPreview(); break;
       case 'dp-copy': { const r = cur()?.data?.result; if (r) await copy([r.columns.map(c => c.name).join('\t'), ...r.rows.map(x => x.join('\t'))].join('\n'), `Copied ${r.rows.length} rows`); break; }
       case 'sb-publish': { const t = cur(); if (t) await publish(t, d.id === '1'); break; }

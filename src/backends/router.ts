@@ -79,6 +79,15 @@ export class RoutingBackend implements Backend {
   run = this.route('run');
   packageContents = this.route('packageContents');
   searchPackages = this.route('searchPackages');
+  groupContents = this.route('groupContents');
+  traces = this.route('traces');
+  traceHitList = this.route('traceHitList');
+  traceRequest = this.route('traceRequest');
+  traceDelete = this.route('traceDelete');
+  dumps = this.route('dumps');
+  dumpDetail = this.route('dumpDetail');
+  revisions = this.route('revisions');
+  revisionSource = this.route('revisionSource');
   valueHelpObjects = this.route('valueHelpObjects');
   valueHelp = this.route('valueHelp');
   createPackage = this.route('createPackage');

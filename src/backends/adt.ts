@@ -8,10 +8,10 @@ import { KWSET, prettyPrint as localPretty } from '../core/abap';
 import { completeAbap, completeCds } from '../core/complete';
 import { RemoteCatalog } from '../adt/catalog';
 import {
-  AtcFinding, Backend, BindingInfo, Breakpoint, Connection, CreateExtra, DebugFrame, DebugState, DebugVar, ExtractStart, GitRepo, QuickFix,
+  AtcFinding, Backend, Dump, Revision, BindingInfo, Breakpoint, Connection, CreateExtra, DebugFrame, DebugState, DebugVar, ExtractStart, GitRepo, QuickFix,
   RefactorPreview, RenameStart, TextEdit, Hit, Include, isCdsLike, Location,
   NewPackage, ObjRef, ObjState, ObjType, PkgRef, PreviewResult, Problem, Proposal, RunResult, StepKind, SystemInfo, Transport,
-  TransportNeed, TYPE_INFO, isSourceType, UnitResult, ValueHelpItem,
+  TransportNeed, TYPE_INFO, isSourceType, UnitResult, ValueHelpItem, TEXT_INCLUDES, isTextInclude, SearchFilter, pkgMatches, adtTypeOf,
 } from '../core/types';
 
 export interface ConnStore {
@@ -46,8 +46,10 @@ export class AdtBackend implements Backend {
   }
 
   includesOf(type: ObjType): Include[] {
-    return type === 'CLAS' ? ['main', 'definitions', 'implementations', 'testclasses'] : ['main'];
+    return type === 'CLAS' ? ['main', 'definitions', 'implementations', 'testclasses'] : type === 'PROG' ? ['main', ...TEXT_INCLUDES] : ['main'];
   }
+  /** programs whose text elements were saved, so activation includes them */
+  private textsSaved = new Map<string, Set<string>>();
 
   async connections() { this.conns = await this.store.list(); return this.conns; }
   async saveConnection(c: Connection, secret?: string) { await this.store.save(c, secret); this.conns = await this.store.list(); }
@@ -93,6 +95,10 @@ export class AdtBackend implements Backend {
   }
 
   searchPackages(conn: string, query: string): Promise<PkgRef[]> { return this.c(conn).searchPackages(query); }
+  async groupContents(conn: string, obj: ObjRef): Promise<ObjRef[]> {
+    if (obj.type !== 'FUGR') return [];
+    return (await this.c(conn).groupContents(obj.name)).map(o => ({ ...o, pkg: obj.pkg }));
+  }
   async valueHelpObjects(conn: string, query: string, types: string[]) {
     const q = query.trim() ? (query.includes('*') ? query : query + '*') : '*';
     const lists = await Promise.all(types.map(t => this.c(conn).searchObjects(q, t, 50).catch(() => [])));
@@ -143,15 +149,23 @@ export class AdtBackend implements Backend {
   }
   gitUnlink(conn: string, key: string) { return this.c(conn).gitUnlink(key); }
 
-  async search(conn: string, query: string): Promise<ObjRef[]> {
+  async search(conn: string, query: string, filter: SearchFilter = {}): Promise<ObjRef[]> {
     if (!query.trim()) return [];
-    return this.c(conn).quickSearch(query.trim());
+    const cl = this.c(conn);
+    const max = filter.pkg ? 200 : 50;           // the package is filtered here, so ask for more
+    let list: ObjRef[];
+    if (filter.type && TYPE_INFO[filter.type].adtType) {
+      const q = query.trim().includes('*') ? query.trim() : query.trim() + '*';
+      list = (await cl.searchObjects(q, TYPE_INFO[filter.type].adtType, max)).map(o => ({ uri: o.uri, name: o.name, type: adtTypeOf(o.type), pkg: o.pkg, desc: o.desc }));
+    } else list = await cl.quickSearch(query.trim(), max);
+    return list.filter(o => pkgMatches(filter.pkg, o.pkg)).slice(0, 100);
   }
 
   /** media type of each form-based object's XML, sent back on save */
   private xmlType = new Map<string, string>();
 
   async read(conn: string, obj: ObjRef, include: Include, version: 'active' | 'inactive') {
+    if (isTextInclude(include)) return this.c(conn).textElements(obj.name, include as 'symbols');
     if (TYPE_INFO[obj.type].editor === 'xml') {
       const r = await this.c(conn).objectXml(version === 'active' ? `${obj.uri}?version=active` : obj.uri);
       this.xmlType.set(conn + '|' + obj.uri, r.contentType);
@@ -170,7 +184,8 @@ export class AdtBackend implements Backend {
     const set = this.inactive.get(conn) || new Set<string>();
     if (m.inactive) set.add(obj.uri); else set.delete(obj.uri);
     this.inactive.set(conn, set);
-    return { ...obj, pkg: m.pkg || obj.pkg, desc: m.desc || obj.desc, inactive: m.inactive, transport: this.transportOf.get(conn + '|' + obj.uri), lockedBy: m.lockedBy };
+    const textsPending = !!this.textsSaved.get(conn)?.has(obj.uri);
+    return { ...obj, pkg: m.pkg || obj.pkg, desc: m.desc || obj.desc, inactive: m.inactive || textsPending, transport: this.transportOf.get(conn + '|' + obj.uri), lockedBy: m.lockedBy };
   }
 
   async lock(conn: string, obj: ObjRef) {
@@ -197,6 +212,12 @@ export class AdtBackend implements Backend {
 
   async write(conn: string, obj: ObjRef, include: Include, source: string, lock: string, transport?: string) {
     const cl = this.c(conn);
+    if (isTextInclude(include)) {
+      await cl.setTextElements(obj.name, include as 'symbols', source, transport);
+      const set = this.textsSaved.get(conn) ?? new Set<string>();
+      set.add(obj.uri); this.textsSaved.set(conn, set);
+      return;
+    }
     if (TYPE_INFO[obj.type].editor === 'xml') {
       if (TYPE_INFO[obj.type].readOnly) throw new Error('Nusa Studio shows this object type read-only. Change it in Eclipse ADT or SAP GUI.');
       const ct = this.xmlType.get(conn + '|' + obj.uri) || (await cl.objectXml(obj.uri)).contentType;
@@ -225,7 +246,7 @@ export class AdtBackend implements Backend {
   }
 
   async syntaxCheck(conn: string, obj: ObjRef, include: Include, source: string): Promise<Problem[]> {
-    if (!isSourceType(obj.type)) return [];
+    if (!isSourceType(obj.type) || isTextInclude(include)) return [];
     const msgs = await this.c(conn).syntaxCheck(obj.uri, sourceUrl(obj.uri, include), source);
     return msgs.map(m => {
       const s = m.uri ? splitSourceUrl(m.uri) : { uri: obj.uri, include };
@@ -234,7 +255,11 @@ export class AdtBackend implements Backend {
   }
 
   async activate(conn: string, objs: ObjRef[]) {
-    const r = await this.c(conn).activate(objs);
+    // saved text elements are activated with their program
+    const saved = this.textsSaved.get(conn);
+    const texts = objs.filter(o => saved?.has(o.uri)).map(o => ({ uri: AdtClient.textElementsUrl(o.name), name: o.name }));
+    const r = await this.c(conn).activate([...objs, ...texts]);
+    if (r.ok) for (const o of objs) saved?.delete(o.uri);
     await this.refreshInactive(conn);
     const problems = r.messages.map(m => {
       const s = m.uri ? splitSourceUrl(m.uri) : { uri: objs[0]?.uri || '', include: 'main' as Include };
@@ -254,7 +279,7 @@ export class AdtBackend implements Backend {
   private relatedCache = new Map<string, { at: number; src: string[] }>();
 
   async complete(conn: string, obj: ObjRef, include: Include, source: string, line: number, col: number): Promise<Proposal[]> {
-    if (!isSourceType(obj.type)) return [];
+    if (!isSourceType(obj.type) || isTextInclude(include)) return [];
     let cat = this.catalogs.get(conn);
     if (!cat) { cat = new RemoteCatalog(this.c(conn)); this.catalogs.set(conn, cat); }
     const related = include === 'main' ? [] : await this.related(conn, obj);
@@ -373,6 +398,18 @@ export class AdtBackend implements Backend {
     const set = this.inactive.get(conn);
     for (const o of preview.objects) set?.add(o.uri);
   }
+  traces(conn: string) { return this.c(conn).traces(this.userOf(conn)); }
+  traceHitList(conn: string, id: string) { return this.c(conn).traceHitList(id); }
+  traceRequest(conn: string, description: string) { return this.c(conn).traceRequest(this.userOf(conn), this.info(conn).client || '', description); }
+  traceDelete(conn: string, id: string) { return this.c(conn).traceDelete(id); }
+  dumps(conn: string) { return this.c(conn).dumps(); }
+  async dumpDetail(conn: string, dump: Dump): Promise<{ html?: string; text?: string }> {
+    if (dump.html) return { html: dump.html };
+    return this.c(conn).dumpDetail(dump.id);
+  }
+  revisions(conn: string, obj: ObjRef, include: Include) { return this.c(conn).revisions(obj.uri, include); }
+  revisionSource(conn: string, rev: Revision) { return this.c(conn).revisionSource(rev.uri); }
+
   async deleteTransport(conn: string, id: string): Promise<void> {
     await this.c(conn).deleteTransport(id);
     this.trCache.delete(conn);

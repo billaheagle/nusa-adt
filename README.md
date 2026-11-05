@@ -81,9 +81,19 @@ Where Eclipse ADT is still ahead: a debugger tested on many releases (watchpoint
 - Syntax check with problems panel and inline markers
 - ABAP Unit with pass/fail per method and jump to the failing line
 - ATC findings grouped by priority
-- Run console classes (`IF_OO_ADT_CLASSRUN`) and, on the local runner, reports
-- **Transport Organizer**: create, release, change the description, delete requests; tick objects to **move** them to another request or **remove** them from one (the objects stay)
+- Run console classes (`IF_OO_ADT_CLASSRUN`); **F8 on a report opens it in SAP GUI** (SE38, executed) on on-premise systems, like *Run As → ABAP Application* in Eclipse, and with breakpoints the debugger waits for it; on the local runner reports run in the app
+- **Transport Organizer** like SE09/SE10: *Modifiable* and *Released* tabs, grouped into workbench requests, customizing requests and transports of copies; create, release, change the description, delete; tick objects to **move** them to another request or **remove** them from one (the objects stay)
+- **Programs with their includes**, like SE80: open the arrow next to a program to see the includes it uses
+- **Function groups and function modules**: the arrow next to a function group lists its function modules and includes; F8 on a function module opens its SE37 test screen in SAP GUI. Create function groups and function modules from *New ABAP Object* (`Ctrl+N`) or the function group's context menu
+- **Text elements** of a report (text symbols, selection texts, list headings) on their own tabs, in the `001=Text` form of the Eclipse text element editor, checked like SE38
+- **Message classes as a table** like SE91: number, text with a 73-character counter, self-explanatory switch, add and remove rows
+- **Search** filtered by object type and package (`ZNUSA*`)
 - Debugger with breakpoints, step into/over/return, run to line (`Ctrl+R`), variables grouped like Eclipse (tables show their rows, structures and objects open on demand), changing values, and switching stack frames
+- **Profiler** (`Ctrl+Shift+F9`, *Profile As ABAP Application*): traces the run and shows the hit list with gross and net time, biggest first; a click opens the calling line. *Trace my next run* records the next run of your user anywhere (Fiori app, OData call, report in SAP GUI), like ABAP Trace requests in Eclipse
+- **Runtime errors (ST22)** in the bottom panel: the system's runtime errors of your user (or of everyone), the full description, and a click to the line where the program stopped
+- **Version history** (*Compare With → Version History in the System*): the versions the system keeps of a source, with author and transport request, compared with the editor
+- **Compare with another system** (*Compare With → Other System*): the active version of the same object in, say, QAS against the editor in DEV, before or after a transport
+- **Report a problem** (Help, Settings → About, connection log): opens a GitHub issue with the version and the connection log, host names, user and SAProuter route replaced; you check the text before it is sent
 - **Wait for any process**: like the Eclipse debugger, stop in code that runs elsewhere, such as a RAP behavior called by a Fiori app, an OData request, or a report started in SAP GUI
 
 **Built-in extensions** (switch each on or off in the Extensions view)
@@ -169,7 +179,7 @@ Every [release](../../releases) has two kinds of downloads:
 
 The portable Windows build is a single `.exe`: put it anywhere (Downloads, a USB stick) and double-click. It keeps its system list in a `nusa-adt-data` folder next to the file; passwords stay in the Windows Credential Manager. It needs the Microsoft Edge WebView2 runtime, which Windows 10 and 11 already include.
 
-The builds are not code-signed yet:
+Builds made without code-signing certificates (see *Code signing* below) show a warning the first time:
 
 - **Windows**: SmartScreen asks once. Click **More info → Run anyway**.
 - **macOS**: unzip, then right-click **Nusa Studio** and choose **Open** the first time. On macOS 15, use **System Settings → Privacy & Security → Open Anyway**.
@@ -187,6 +197,27 @@ Every build checks the latest **published** GitHub release once a day (Settings 
 
 From the next build on, releases contain `latest.json` and the signatures, and *Install and restart* appears. The portable files are always replaced by hand.
 
+### Code signing
+
+The workflow signs each platform as soon as its certificates are in the repository secrets; without them it builds unsigned as before. Nothing else has to change.
+
+**Windows** (removes the SmartScreen warning once the certificate has a reputation; an EV certificate has it at once):
+
+1. Get a code-signing certificate as a `.pfx` file with its password (from a certificate authority such as DigiCert, Sectigo or SSL.com).
+2. Encode it: PowerShell `[Convert]::ToBase64String([IO.File]::ReadAllBytes("cert.pfx")) | Set-Clipboard`.
+3. Add the secrets `WINDOWS_CERTIFICATE` (the base64 text) and `WINDOWS_CERTIFICATE_PASSWORD`.
+
+The installers and the portable `.exe` are then signed with SHA-256 and a DigiCert timestamp. Certificates that live only on a hardware token or in a cloud HSM (most EV certificates since 2023) cannot be exported as `.pfx`; they need a signing service such as Azure Trusted Signing, which can be added as a `signCommand` later.
+
+**macOS** (removes the "unidentified developer" warning):
+
+1. In an Apple Developer account, create a *Developer ID Application* certificate, export it from Keychain Access as `.p12` with a password.
+2. Encode it: `base64 -i cert.p12 | pbcopy`.
+3. Add the secrets `APPLE_CERTIFICATE` (the base64 text), `APPLE_CERTIFICATE_PASSWORD` and `APPLE_SIGNING_IDENTITY` (for example `Developer ID Application: Your Name (TEAMID)`).
+4. For notarization add `APPLE_ID`, `APPLE_PASSWORD` (an app-specific password from appleid.apple.com) and `APPLE_TEAM_ID`. Without these the app is signed but not notarized, and macOS still asks once.
+
+Linux packages are not signed; the AppImage and `.deb` run as they are.
+
 ## Connect to SAP
 
 The app starts on the built-in **DEMO** system: sample classes, a report, a CDS view and transports, so you can try every feature without SAP. Changes there stay on your computer; **Reset DEMO System** in the command palette restores the samples.
@@ -196,7 +227,7 @@ To work on a real system, open **Systems** (the server icon at the bottom of the
 | Type | What to enter |
 |---|---|
 | **S/4HANA or NetWeaver** | URL such as `https://host:44300` (HTTPS port from transaction `SMICM` → Services), client and user. The password is asked once and kept in the keychain. Systems with SAML or Kerberos can use *Browser logon* instead. Systems you reach with SAP GUI but not over HTTPS (for example behind a SAProuter) use *SAP GUI / RFC*, see below. |
-| **S/4HANA Cloud Public Edition** | The address of the developer extensibility system as you open it in the browser, such as `https://my123456.s4hana.cloud.sap` (a launchpad link with `/ui#Shell-home` works too, and so does the `-api` URL). The browser opens and you log on as in the Fiori launchpad; Nusa Studio then works against `my123456-api.s4hana.cloud.sap`. While it waits, the window shows the logon link with **Copy link**, **Open again** and **Cancel**, so you can use another browser or profile. |
+| **S/4HANA Cloud Public Edition** | The address of the developer extensibility system as you open it in the browser, such as `https://my123456.s4hana.cloud.sap` (a launchpad link with `/ui#Shell-home` works too, and so does the `-api` URL). The window shows the logon link with **Open in browser** (your default browser) and **Copy link** (any other browser or profile), so you choose where to log on; you log on as in the Fiori launchpad and Nusa Studio then works against `my123456-api.s4hana.cloud.sap`. To have the default browser open at once, turn on *Settings → Browser logon*. |
 | **BTP ABAP Environment** | Either the service key JSON (OAuth, the token refreshes on its own) or just the system URL, such as `https://<id>.abap.eu10.hana.ondemand.com`, with *Browser logon*. |
 | **Local runner** | The runner's URL, for example `http://localhost:7777`. See [docs/RUNNER-PROTOCOL.md](docs/RUNNER-PROTOCOL.md). |
 
@@ -209,7 +240,7 @@ Eclipse ADT does not need HTTPS for on-premise systems: it sends every ADT reque
 1. In the SAP Software Center (S-user), search for **SAP NW RFC SDK 7.50** (it is listed under the letter N), choose your platform (Windows on x64 64bit) and download the latest patch.
 2. Extract the `.SAR` with SAPCAR (`sapcar -xvf <file>.SAR`) or the ZIP, for example to `C:\SAP`. You get `C:\SAP\nwrfcsdk\lib\sapnwrfc.dll`.
 3. Windows also needs the Microsoft Visual C++ Redistributable (x64); most PCs with SAP GUI already have it.
-4. In Nusa Studio, add an **S/4HANA or NetWeaver** system with logon **SAP GUI / RFC**, and copy the values from the SAP GUI Logon entry (**Properties → Connection**): application server, instance number, system ID, SAProuter string. Pasting a full route that ends with the server (`/H/router/S/3299/H/10.27.1.2/S/3220`) fills all three. Then the SDK folder, client, user and password.
+4. In Nusa Studio, add an **S/4HANA or NetWeaver** system with logon **SAP GUI / RFC**. The SDK folder is found when it is in a usual place (`C:\SAP\nwrfcsdk`, Downloads, …); otherwise pick it with **Browse…**, and the form tells you right away whether `sapnwrfc.dll` is there. Then copy the values from the SAP GUI Logon entry (**Properties → Connection**): application server, instance number, system ID, SAProuter string. Pasting a full route that ends with the server (`/H/router/S/3299/H/10.27.1.2/S/3220`) fills all three. Then the SDK folder, client, user and password.
 
 Nusa Studio keeps two RFC connections open (one for reading, one for locks while you edit), like Eclipse. After a rejected password it stops trying until you save the system again, so a typo cannot lock your user. The user needs the same authorizations as for Eclipse over RFC, including `S_RFC` for function group `SADT_REST_RFC`. SAP GUI only features such as running a report with list output are not part of this. The RFC route is new: if it does not connect, the connection log (**Log** on the system) shows the error from the SDK.
 
@@ -335,7 +366,7 @@ Completion works out where the cursor is, infers variable types from the source,
 
 | Path | Contents |
 |---|---|
-| `src/ui` | workbench (`app.ts`), editor modes and completion popup (`editor.ts`), styles |
+| `src/ui` | workbench (`app.ts`), editor modes and completion popup (`editor.ts`), the system form, the RAP form, the transport list, runtime views (profiler, runtime errors), version history and compare, form editors, styles |
 | `src/core` | ABAP analysis and pretty printer, completion engine, reference catalog, ABAP Cleaner, RAP generator, outline, templates, shared types |
 | `src/adt` | ADT REST client, XML parser, repository catalog, debugger, Tauri bridge |
 | `src/backends` | `adt.ts` for real systems, `mock.ts` for the DEMO system, `router.ts` |
@@ -349,32 +380,34 @@ Nusa Studio is a preview. What has been verified so far:
 
 | Area | Status |
 |---|---|
-| Workbench UI end to end (DEMO system, real editor) | 33 scenarios, including moving objects between transport requests, quick fix, rename and extract method with their preview, changing and deleting transport requests, the debugger's grouped variables, stack frames and value changes, adding an on-premise system over RFC with a SAProuter route, the IAM app layout, the data element and domain forms with value help, preview tabs, collapse all, Format Document, the IAM app form and creating a communication scenario; edit, save, activate, completion while typing, packages, new objects, service binding publish, data preview, RAP generator, ABAP Cleaner, abapGit, compare and local history, draft recovery, multi-cursor and line editing, systems, themes, phone width |
-| Desktop shell against an in-memory ADT server | tested: title bar, error pages, save with transport, activate, session restore |
-| ABAP analysis, formatter, cleaner, RAP generator, diff, object types, completion contexts, refactoring, transport and debugger payloads | 77 unit tests; the formatter is checked to keep every token of the sample sources |
+| Workbench UI end to end (DEMO system, real editor) | 36 scenarios, including runtime errors with the sandboxed description and the jump to the line, version history, comparing with another system, creating a function group and a function module, the problem report, function groups with their modules, text elements, the message class table, the profiler, search filters, programs with their includes, the SE09-style transport tabs, moving objects between transport requests, quick fix, rename and extract method with their preview, changing and deleting transport requests, the debugger's grouped variables, stack frames and value changes, adding an on-premise system over RFC with a SAProuter route, the IAM app layout, the data element and domain forms with value help, preview tabs, collapse all, Format Document, the IAM app form and creating a communication scenario; edit, save, activate, completion while typing, packages, new objects, service binding publish, data preview, RAP generator, ABAP Cleaner, abapGit, compare and local history, draft recovery, multi-cursor and line editing, systems, themes, phone width |
+| Desktop shell against an in-memory ADT server | tested: title bar, error pages, save with transport, activate, session restore, F8 on a report opening SAP GUI, the SDK folder check and Browse |
+| ABAP analysis, formatter, cleaner, RAP generator, diff, object types, completion contexts, refactoring, transport, trace, runtime error, version history and debugger payloads, problem report anonymization | 88 unit tests; the formatter is checked to keep every token of the sample sources |
 | ADT response parsing and edit cycle | tested against recorded payload shapes and an in-memory ADT server |
 | Rust core | compiled and unit-tested by the `rust` job of the workflow before the installers are built |
 | S/4HANA Cloud Public Edition | first checks on a live system: browser logon, package explorer with all object families, class and CDS editing, data element, domain and IAM app forms, service binding and data preview work. Package creation, publishing and abapGit are not checked yet |
 | Other live systems | on-premise S/4HANA and BTP ABAP are not checked yet |
 | RFC through SAProuter | logon through a SAProuter checked on a live system (SAP ECC 6.0, which has no ADT, so no further); the ADT calls over RFC are checked against a stand-in for the RFC SDK |
-| Quick fix, rename, extract method, debugger, transport delete, description and moving objects | follow the ADT protocol as Eclipse uses it and are tested against an in-memory ADT server; not yet on a live system. Changing a transport description and its object list uses the request document; releases that refuse it get a clear message (then use SE09) |
+| Quick fix, rename, extract method, debugger, transport delete, description and moving objects, function groups, creating function groups and modules, text elements, message class editing, profiler, runtime errors, version history | follow the ADT protocol as Eclipse uses it and are tested against an in-memory ADT server; not yet on a live system. Changing a transport description and its object list uses the request document; releases that refuse it get a clear message (then use SE09) |
 | Form-based objects on a live system | not tested yet. They are read and saved as the XML document the system returns. New ones are created by copying the format of an existing object of the same type in that system, so the first object of a type the system has never seen still needs Eclipse |
 | Browser logon | redirect to `http://localhost:<port>/adt/redirect`; BTP OAuth needs it allowed by the UAA |
 
-Found something that does not work with your system? Open an issue with the error message and the SAP release.
+Found something that does not work with your system? Use **Help: Report a Problem** in the app (it fills in the version and an anonymized connection log), or open an issue with the error message and the SAP release.
 
 ## Roadmap
 
 - [ ] First verified run against S/4HANA, S/4HANA Cloud and BTP
-- [ ] Code signing for Windows and macOS installers
+- [x] Code signing for Windows and macOS installers (workflow ready, needs the certificates)
 - [ ] CDS formatter and server-side DDL completion
 - [x] Quick fix, rename and extract-method refactoring
 - [x] Debugger: wait for any process, run to line, change values
 - [x] Update check and signed in-app updates
+- [x] Function groups and modules, text elements, message classes, profiler
+- [x] Creating function groups and function modules
+- [x] Runtime errors (ST22), version history, compare with another system
 - [x] RAP generator (views, behavior definitions, service binding)
 - [x] abapGit pull and link
 - [ ] abapGit push and staging
-- [ ] Function groups, message classes, data elements and domains
 - [ ] Debugger watchpoints and conditional breakpoints
 
 ## License

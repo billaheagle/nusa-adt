@@ -1,7 +1,7 @@
 // The contract between the IDE UI and whatever answers it: the mock (prototype),
 // a real SAP system over ADT REST, or the local ABAP runner.
 
-export type ObjType = 'CLAS' | 'INTF' | 'PROG' | 'TABL' | 'DDLS' | 'DDLX' | 'DCLS' | 'BDEF' | 'SRVD' | 'SRVB'
+export type ObjType = 'CLAS' | 'INTF' | 'PROG' | 'INCL' | 'FUGR' | 'FUNC' | 'TABL' | 'DDLS' | 'DDLX' | 'DCLS' | 'BDEF' | 'SRVD' | 'SRVB'
   // form-based objects (edited as an XML document, like the form editors in Eclipse)
   | 'DTEL' | 'DOMA' | 'TTYP' | 'MSAG'
   | 'AUTH' | 'SUSO' | 'SUSH' | 'SUCO'
@@ -10,7 +10,11 @@ export type ObjType = 'CLAS' | 'INTF' | 'PROG' | 'TABL' | 'DDLS' | 'DDLX' | 'DCL
   | 'SMBC' | 'SAJC' | 'SAJT' | 'NROB' | 'APLO' | 'HTTP' | 'EVTB'
   /** any other repository object: shown with the label the system gives it, read-only XML */
   | 'XOBJ';
-export type Include = 'main' | 'definitions' | 'implementations' | 'testclasses' | 'macros';
+export type Include = 'main' | 'definitions' | 'implementations' | 'testclasses' | 'macros'
+  // text elements of a program, edited as "001=Text" lines like in Eclipse
+  | 'symbols' | 'selections' | 'headings';
+export const TEXT_INCLUDES: Include[] = ['symbols', 'selections', 'headings'];
+export const isTextInclude = (i: Include) => TEXT_INCLUDES.includes(i);
 export type Severity = 'error' | 'warning' | 'info';
 /** s4: S/4HANA or NetWeaver on-premise · s4cloud: S/4HANA Cloud Public Edition · btp: BTP ABAP Environment */
 export type ConnKind = 's4' | 's4cloud' | 'btp' | 'runner';
@@ -45,8 +49,16 @@ export interface Connection {
 }
 
 export interface PkgRef { name: string; desc: string }
+export interface SearchFilter { type?: ObjType; pkg?: string }
+/** "ZNUSA*" matches ZNUSA_FLIGHT; without * the name must match exactly. */
+export function pkgMatches(pattern: string | undefined, pkg: string): boolean {
+  const p = (pattern || '').trim().toUpperCase();
+  if (!p) return true;
+  const re = new RegExp('^' + p.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
+  return re.test((pkg || '').toUpperCase());
+}
 /** Extra input some object types need on creation. */
-export interface CreateExtra { serviceDefinition?: string; bindingType?: 'V2' | 'V4'; category?: 'UI' | 'Web API'; referencedObject?: string; /** package, for templates that record it */ pkg?: string }
+export interface CreateExtra { serviceDefinition?: string; bindingType?: 'V2' | 'V4'; category?: 'UI' | 'Web API'; referencedObject?: string; /** function modules: their function group */ functionGroup?: string; /** package, for templates that record it */ pkg?: string }
 export interface NewPackage {
   name: string; desc: string; superPackage: string; softwareComponent: string; transportLayer: string;
   packageType: 'development' | 'structure' | 'main';
@@ -122,6 +134,8 @@ export interface Transport {
   status: 'modifiable' | 'released';
   task?: string;
   objects: string[];         // "R3TR CLAS ZCL_X"
+  /** SE09/SE10 request type: workbench (K), customizing (W), transport of copies (T) */
+  category?: 'workbench' | 'customizing' | 'copies';
 }
 
 export interface TransportNeed { needed: boolean; current?: string; requests: Transport[]; reason?: string }
@@ -161,6 +175,21 @@ export interface TextEdit {
   from: { line: number; ch: number }; to: { line: number; ch: number };
   oldText: string; newText: string;
 }
+/** ABAP runtime traces (SAT / Eclipse ABAP Profiling). Times in microseconds. */
+export interface TraceRun { id: string; title: string; at: string; objectName?: string; runtime?: number; abap?: number; db?: number; system?: number }
+export interface TraceHit { name: string; program: string; hits: number; gross: number; net: number; grossPct: number; netPct: number; at?: Location }
+
+/** A runtime error (ST22). */
+export interface Dump {
+  id: string; error: string; program: string; user: string; at: string; title: string;
+  /** where it stopped, when the system says */
+  where?: Location;
+  /** the full description (HTML) when the feed carries it */
+  html?: string;
+}
+/** A version of a source in the system (version history, like Eclipse "Compare With > Revision"). */
+export interface Revision { uri: string; version: string; title: string; author: string; date: string; transport?: string }
+
 export interface QuickFix { title: string; desc?: string; /** backend data to apply it */ token: string }
 export interface RefactorPreview {
   title: string; edits: TextEdit[]; objects: ObjRef[];
@@ -186,6 +215,8 @@ export interface Backend {
   /** Subpackages and objects of a package, for the lazily expanded explorer. */
   packageContents(conn: string, pkg: string): Promise<{ packages: PkgRef[]; objects: ObjState[] }>;
   searchPackages(conn: string, query: string): Promise<PkgRef[]>;
+  /** Parts shown under an object in the explorer: function modules and includes of a function group. */
+  groupContents(conn: string, obj: ObjRef): Promise<ObjRef[]>;
   /** Value help: repository objects of the given types (DOMA, DTEL, SHLP, …) matching a pattern. */
   valueHelpObjects(conn: string, query: string, types: string[]): Promise<{ name: string; desc: string; type: string; pkg?: string }[]>;
   valueHelp(conn: string, kind: 'softwarecomponents' | 'transportlayers'): Promise<ValueHelpItem[]>;
@@ -201,7 +232,8 @@ export interface Backend {
   gitLink(conn: string, r: { pkg: string; url: string; branch: string; transport?: string; user?: string; password?: string }): Promise<void>;
   gitPull(conn: string, key: string, transport?: string, user?: string, password?: string): Promise<string>;
   gitUnlink(conn: string, key: string): Promise<void>;
-  search(conn: string, query: string): Promise<ObjRef[]>;
+  /** Repository search; filter by object type and package (a package name may end with *). */
+  search(conn: string, query: string, filter?: SearchFilter): Promise<ObjRef[]>;
   includesOf(type: ObjType): Include[];
 
   read(conn: string, obj: ObjRef, include: Include, version: 'active' | 'inactive'): Promise<string>;
@@ -241,6 +273,20 @@ export interface Backend {
   moveToTransport(conn: string, from: string, to: string, entries: string[]): Promise<void>;
   changeTransportDesc(conn: string, id: string, desc: string): Promise<void>;
 
+  // Profiler (ABAP runtime traces of the user)
+  traces(conn: string): Promise<TraceRun[]>;
+  traceHitList(conn: string, id: string): Promise<TraceHit[]>;
+  /** Traces the next run of the user in any process (a console class, a Fiori app, a report in SAP GUI). */
+  traceRequest(conn: string, description: string): Promise<void>;
+  traceDelete(conn: string, id: string): Promise<void>;
+
+  // Runtime errors (ST22) and the version history of sources
+  dumps(conn: string): Promise<Dump[]>;
+  /** The full description of a runtime error: HTML when the system has it, otherwise plain text. */
+  dumpDetail(conn: string, dump: Dump): Promise<{ html?: string; text?: string }>;
+  revisions(conn: string, obj: ObjRef, include: Include): Promise<Revision[]>;
+  revisionSource(conn: string, rev: Revision): Promise<string>;
+
   /** Runs obj and stops at the first breakpoint it reaches (null: it finished without stopping). */
   debugStart(conn: string, obj: ObjRef, bps: Breakpoint[]): Promise<DebugState | null>;
   /** Waits, like Eclipse, for any process of the user (a Fiori app, an OData call, a job) to reach a breakpoint. Null when cancelled. */
@@ -269,6 +315,9 @@ export const TYPE_INFO: Record<ObjType, TypeInfo> = {
   CLAS: { label: 'Class', folder: 'Classes', group: 'src', glyph: 'C', adt: '/sap/bc/adt/oo/classes/', adtType: 'CLAS/OC', editor: 'abap', prefix: 'ZCL_', maxLen: 30 },
   INTF: { label: 'Interface', folder: 'Interfaces', group: 'src', glyph: 'I', adt: '/sap/bc/adt/oo/interfaces/', adtType: 'INTF/OI', editor: 'abap', prefix: 'ZIF_', maxLen: 30 },
   PROG: { label: 'Program', folder: 'Programs', group: 'src', glyph: 'P', adt: '/sap/bc/adt/programs/programs/', adtType: 'PROG/P', editor: 'abap', prefix: 'ZR_', maxLen: 40 },
+  INCL: { label: 'Include', folder: 'Includes', group: 'src', glyph: 'I', adt: '/sap/bc/adt/programs/includes/', adtType: 'PROG/I', editor: 'abap', prefix: 'Z', maxLen: 40 },
+  FUGR: { label: 'Function Group', folder: 'Function Groups', group: 'src', glyph: 'G', adt: '/sap/bc/adt/functions/groups/', adtType: 'FUGR/F', editor: 'abap', prefix: 'Z', maxLen: 26 },
+  FUNC: { label: 'Function Module', folder: 'Function Modules', group: 'src', glyph: 'F', adt: '', adtType: 'FUGR/FF', editor: 'abap', prefix: 'Z_', maxLen: 30 },
   TABL: { label: 'Database Table', folder: 'Database Tables', group: 'ddic', glyph: 'T', adt: '/sap/bc/adt/ddic/tables/', adtType: 'TABL/DT', editor: 'cds', prefix: 'Z', maxLen: 16 },
   DDLS: { label: 'Data Definition', folder: 'Data Definitions', group: 'cds', glyph: 'D', adt: '/sap/bc/adt/ddic/ddl/sources/', adtType: 'DDLS/DF', editor: 'cds', prefix: 'ZI_', maxLen: 30 },
   DDLX: { label: 'Metadata Extension', folder: 'Metadata Extensions', group: 'cds', glyph: 'M', adt: '/sap/bc/adt/ddic/ddlx/sources/', adtType: 'DDLX/EX', editor: 'cds', prefix: 'ZC_', maxLen: 30 },
@@ -309,7 +358,7 @@ export const GROUPS: { id: ObjGroup; label: string; types: ObjType[] }[] = [
   { id: 'srv', label: 'Business Services', types: ['SRVD', 'SRVB', 'HTTP', 'EVTB'] },
   { id: 'cds', label: 'Core Data Services', types: ['DDLS', 'BDEF', 'DDLX', 'DCLS'] },
   { id: 'ddic', label: 'Dictionary', types: ['TABL', 'DTEL', 'DOMA', 'TTYP'] },
-  { id: 'src', label: 'Source Code Library', types: ['CLAS', 'INTF', 'PROG'] },
+  { id: 'src', label: 'Source Code Library', types: ['CLAS', 'INTF', 'PROG', 'FUGR', 'INCL', 'FUNC'] },
   { id: 'texts', label: 'Texts', types: ['MSAG'] },
   { id: 'auth', label: 'Authorizations', types: ['AUTH', 'SUSO', 'SUSH', 'SUCO'] },
   { id: 'iam', label: 'Identity and Access Management', types: ['SIA6', 'SIA1', 'SIA7', 'SIA8', 'SIA9', 'SIA2', 'SIA5', 'SIA3'] },
@@ -323,6 +372,7 @@ export const ADT_TYPE: Record<string, ObjType> = Object.fromEntries(Object.entri
 /** Our type for an ADT type id: exact (CLAS/OC), then by its main type (SIA6/…), else XOBJ. */
 export function adtTypeOf(raw: string): ObjType {
   if (!raw) return 'XOBJ';
+  if (raw === 'FUGR/I') return 'INCL';                  // function group includes are includes
   if (ADT_TYPE[raw]) return ADT_TYPE[raw];
   const main = raw.split('/')[0].toUpperCase();
   if (main !== 'XOBJ' && main in TYPE_INFO) return main as ObjType;
@@ -335,7 +385,16 @@ export const isCdsLike = (t: ObjType) => TYPE_INFO[t].editor === 'cds';
 export const INCLUDE_LABEL: Record<Include, string> = {
   main: 'Global Class', definitions: 'Class-relevant Local Types', implementations: 'Local Types',
   testclasses: 'Test Classes', macros: 'Macros',
+  symbols: 'Text Symbols', selections: 'Selection Texts', headings: 'List Headings',
 };
+
+/** URI of a function module (it lives in its function group). */
+export const fmUri = (group: string, fm: string) => `/sap/bc/adt/functions/groups/${encodeURIComponent(group.toLowerCase())}/fmodules/${encodeURIComponent(fm.toLowerCase())}`;
+export const fgIncludeUri = (group: string, inc: string) => `/sap/bc/adt/functions/groups/${encodeURIComponent(group.toLowerCase())}/includes/${encodeURIComponent(inc.toLowerCase())}`;
+
+/** URI of an object about to be created (function modules live under their group). */
+export const newObjectUri = (type: ObjType, name: string, extra: CreateExtra = {}) =>
+  type === 'FUNC' ? fmUri(extra.functionGroup || '', name) : uriFor(type, name);
 
 export function uriFor(type: ObjType, name: string): string {
   if (!TYPE_INFO[type].adt) return `/sap/bc/adt/vit/wb/object_type/${type.toLowerCase()}/object_name/${encodeURIComponent(name.toLowerCase())}`;

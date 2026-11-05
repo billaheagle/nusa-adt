@@ -4,7 +4,7 @@
 
 import { asxValues, attr, all, base64Utf8, decode, encode, first, kid, kids, parseStart, parseXml, textOf, XEl } from './xml';
 import {
-  ADT_TYPE, adtTypeOf, BindingInfo, GitRepo, Include, NewPackage, ObjRef, ObjType, PkgRef, PreviewResult, Transport, TYPE_INFO, ValueHelpItem,
+  ADT_TYPE, adtTypeOf, BindingInfo, GitRepo, Include, NewPackage, ObjRef, ObjType, PkgRef, PreviewResult, Transport, TYPE_INFO, ValueHelpItem, TraceRun, TraceHit, Location, Dump, Revision, fmUri
 } from '../core/types';
 
 export interface HttpRequest {
@@ -82,6 +82,16 @@ export class AdtClient {
   }
 
   // ------------------------------------------------------------------ repository
+  /** Function modules and includes of a function group (nodestructure of FUGR/F). */
+  async groupContents(group: string): Promise<ObjRef[]> {
+    const r = await this.req({
+      method: 'POST', path: '/sap/bc/adt/repository/nodestructure',
+      query: { parent_type: 'FUGR/F', parent_name: group.toUpperCase(), withShortDescriptions: 'true' },
+      accept: 'application/vnd.sap.as+xml', contentType: 'application/vnd.sap.as+xml',
+    });
+    return parseNodeStructure(r.body, '').objects.filter(o => o.type === 'FUNC' || o.type === 'INCL');
+  }
+
   async nodeStructure(pkg: string): Promise<{ packages: PkgRef[]; objects: ObjRef[] }> {
     const r = await this.req({
       method: 'POST', path: '/sap/bc/adt/repository/nodestructure',
@@ -182,6 +192,112 @@ export class AdtClient {
     await this.req({ method: 'POST', path: uri, query: { _action: 'UNLOCK', lockHandle: handle }, stateful: true });
   }
 
+  // ------------------------------------------------------------------ runtime traces (ABAP Profiling)
+  async traces(user: string): Promise<TraceRun[]> {
+    const r = await this.req({ method: 'GET', path: '/sap/bc/adt/runtime/traces/abaptraces', query: { user: user.toUpperCase() }, accept: 'application/atom+xml;type=feed, application/xml' });
+    return parseTraces(r.body);
+  }
+  async traceHitList(id: string): Promise<TraceHit[]> {
+    const r = await this.req({ method: 'GET', path: `${traceUri(id)}/hitlist`, query: { withSystemEvents: 'false' }, accept: 'application/xml' });
+    return parseHitList(r.body);
+  }
+  async traceDelete(id: string): Promise<void> { await this.req({ method: 'DELETE', path: traceUri(id) }); }
+
+  /**
+   * Like "Profile As" in Eclipse: trace parameters, then a request that traces the next
+   * execution of the user in any process type for the next hour.
+   */
+  async traceRequest(user: string, client: string, description: string): Promise<void> {
+    const v = (k: string, val: string | number | boolean) => `<trc:${k} value="${encode(String(val))}"></trc:${k}>`;
+    const params = `<?xml version="1.0" encoding="UTF-8"?><trc:parameters xmlns:trc="http://www.sap.com/adt/runtime/traces/abaptraces">${[
+      v('allMiscAbapStatements', false), v('allProceduralUnits', true), v('allInternalTableEvents', false), v('allDynproEvents', false),
+      v('description', description), v('aggregate', true), v('explicitOnOff', false), v('withRfcTracing', true),
+      v('allSystemKernelEvents', false), v('sqlTrace', false), v('allDbEvents', true), v('maxSizeForTraceFile', 30), v('maxTimeForTracing', 1800),
+    ].join('')}</trc:parameters>`;
+    const p = await this.req({ method: 'POST', path: '/sap/bc/adt/runtime/traces/abaptraces/parameters', contentType: 'application/xml', body: params });
+    const parametersId = p.headers?.location || p.headers?.Location || '';
+    if (!parametersId) throw new AdtError('The system did not accept the trace settings', 400);
+    const T = '/sap/bc/adt/runtime/traces/abaptraces/';
+    await this.req({
+      method: 'POST', path: '/sap/bc/adt/runtime/traces/abaptraces/requests', accept: 'application/xml',
+      query: {
+        server: '*', description, traceUser: user.toUpperCase(), traceClient: client, processType: T + 'processtypes/any', objectType: T + 'objecttypes/any',
+        expires: new Date(Date.now() + 3600_000).toISOString(), maximalExecutions: '1', parametersId,
+      },
+    });
+  }
+
+  // ------------------------------------------------------------------ runtime errors (ST22)
+  private dumpQuery?: Record<string, string>;
+  /** The query of the system's default dumps view (Eclipse: ABAP Runtime Errors feed), e.g. the user's errors of the last days. */
+  private async dumpsQuery(): Promise<Record<string, string>> {
+    if (this.dumpQuery) return this.dumpQuery;
+    let q: Record<string, string> = {};
+    try {
+      const r = await this.req({ method: 'GET', path: '/sap/bc/adt/feeds', accept: 'application/atom+xml;type=feed' });
+      q = dumpsDefaultQuery(r.body);
+    } catch { /* older systems: no feed list, the plain feed works */ }
+    return (this.dumpQuery = q);
+  }
+  async dumps(): Promise<Dump[]> {
+    const query = await this.dumpsQuery();
+    const r = await this.req({ method: 'GET', path: '/sap/bc/adt/runtime/dumps', query, accept: 'application/atom+xml;type=feed' });
+    return parseDumps(r.body);
+  }
+  /** Full description: the formatted text, or the HTML page of the error. */
+  async dumpDetail(id: string): Promise<{ html?: string; text?: string }> {
+    const path = id.replace(/^adt:\/\/[^/]+/, '');
+    try {
+      const r = await this.req({ method: 'GET', path: `${path}/formatted`, accept: 'text/plain' });
+      if (r.body.trim()) return { text: r.body };
+    } catch { /* not on every release */ }
+    const r = await this.req({ method: 'GET', path, accept: 'text/html, application/xhtml+xml, application/*;q=0.5' });
+    return /<html|<body|<div|<table/i.test(r.body) ? { html: r.body } : { text: r.body };
+  }
+
+  // ------------------------------------------------------------------ version history
+  /** Versions of one source, newest first (the "versions" link of the object). */
+  async revisions(uri: string, include: Include): Promise<Revision[]> {
+    let url = '';
+    try {
+      const r = await this.req({ method: 'GET', path: uri, accept: 'application/*' });
+      url = versionsLink(r.body, uri, include);
+    } catch { /* fall back to the usual path */ }
+    url = url || `${sourceUrl(uri, include)}/versions`;
+    const r = await this.req({ method: 'GET', path: url, accept: 'application/atom+xml;type=feed' });
+    return parseRevisions(r.body, url);
+  }
+  async revisionSource(uri: string): Promise<string> {
+    const r = await this.req({ method: 'GET', path: uri, accept: 'text/plain' });
+    return r.body;
+  }
+
+  // ------------------------------------------------------------------ text elements
+  static textElementsUrl(prog: string) { return `/sap/bc/adt/textelements/programs/${encodeURIComponent(prog.toLowerCase())}`; }
+
+  /** Text symbols, selection texts or list headings as "KEY=Text" lines (empty when there are none). */
+  async textElements(prog: string, cat: 'symbols' | 'selections' | 'headings'): Promise<string> {
+    try {
+      const r = await this.req({ method: 'GET', path: `${AdtClient.textElementsUrl(prog)}/source/${cat}`, accept: `application/vnd.sap.adt.textelements.${cat}.v1` });
+      return r.body;
+    } catch (e) {
+      if (e instanceof AdtError && e.status === 404) return '';
+      throw e;
+    }
+  }
+
+  /** Text elements have their own lock, like their editor in Eclipse. */
+  async setTextElements(prog: string, cat: 'symbols' | 'selections' | 'headings', text: string, transport?: string): Promise<void> {
+    const url = AdtClient.textElementsUrl(prog);
+    const l = await this.lock(url);
+    try {
+      const mt = `application/vnd.sap.adt.textelements.${cat}.v1`;
+      await this.req({ method: 'PUT', path: `${url}/source/${cat}`, query: { lockHandle: l.handle, corrNr: transport || l.transport }, stateful: true, contentType: `${mt}; charset=UTF-8`, accept: mt, body: text });
+    } finally {
+      await this.unlock(url, l.handle).catch(() => undefined);
+    }
+  }
+
   async setSource(url: string, source: string, handle: string, transport?: string): Promise<void> {
     await this.req({
       method: 'PUT', path: url, query: { lockHandle: handle, corrNr: transport }, stateful: true,
@@ -195,7 +311,7 @@ export class AdtClient {
     await this.req({ method: 'POST', path: `${uri}/includes`, query: { lockHandle: handle, corrNr: transport }, stateful: true, contentType: 'application/*', body });
   }
 
-  async createObject(type: ObjType, name: string, desc: string, pkg: string, user: string, transport?: string, extra: { serviceDefinition?: string; bindingType?: 'V2' | 'V4'; category?: 'UI' | 'Web API' } = {}): Promise<string> {
+  async createObject(type: ObjType, name: string, desc: string, pkg: string, user: string, transport?: string, extra: { serviceDefinition?: string; bindingType?: 'V2' | 'V4'; category?: 'UI' | 'Web API'; functionGroup?: string } = {}): Promise<string> {
     const n = encode(name.toUpperCase()), d = encode(desc), p = encode(pkg), u = encode(user.toUpperCase());
     const core = 'xmlns:adtcore="http://www.sap.com/adt/core"';
     const common = `adtcore:description="${d}" adtcore:name="${n}" adtcore:type="${TYPE_INFO[type].adtType}" adtcore:responsible="${u}" adtcore:masterLanguage="EN"`;
@@ -203,9 +319,19 @@ export class AdtClient {
     const blue = (t: string) => `<blue:blueSource xmlns:blue="http://www.sap.com/wbobj/blue" ${core} ${common.replace(TYPE_INFO[type].adtType, t)}>${pkgRef}</blue:blueSource>`;
     const v4 = (extra.bindingType ?? 'V4') === 'V4';
     if (TYPE_INFO[type].editor === 'xml') return this.createByExample(type, name, desc, pkg, user, transport);
+    if (type === 'FUNC') {
+      // like Eclipse: the module goes into its function group, which brings the package and the transport
+      const g = (extra.functionGroup || '').toUpperCase();
+      if (!g) throw new AdtError('Enter the function group of the function module.', 400);
+      const gUri = TYPE_INFO.FUGR.adt + encodeURIComponent(g.toLowerCase());
+      const xml = `<?xml version="1.0" encoding="UTF-8"?><fmodule:abapFunctionModule xmlns:fmodule="http://www.sap.com/adt/functions/fmodules" ${core} adtcore:description="${d}" adtcore:name="${n}" adtcore:type="FUGR/FF"><adtcore:containerRef adtcore:name="${encode(g)}" adtcore:type="FUGR/F" adtcore:uri="${gUri}"/></fmodule:abapFunctionModule>`;
+      await this.req({ method: 'POST', path: `${gUri}/fmodules`, query: { corrNr: transport }, contentType: 'application/*', body: xml });
+      return fmUri(g, name);
+    }
     const bodies: Partial<Record<ObjType, [string, string]>> = {
       CLAS: ['/sap/bc/adt/oo/classes', `<class:abapClass xmlns:class="http://www.sap.com/adt/oo/classes" ${core} ${common} class:final="true" class:visibility="public">${pkgRef}<class:include adtcore:name="CLAS/OC" adtcore:type="CLAS/OC" class:includeType="testclasses"/><class:superClassRef/></class:abapClass>`],
       INTF: ['/sap/bc/adt/oo/interfaces', `<intf:abapInterface xmlns:intf="http://www.sap.com/adt/oo/interfaces" ${core} ${common}>${pkgRef}</intf:abapInterface>`],
+      FUGR: ['/sap/bc/adt/functions/groups', `<group:abapFunctionGroup xmlns:group="http://www.sap.com/adt/functions/groups" ${core} ${common}>${pkgRef}</group:abapFunctionGroup>`],
       PROG: ['/sap/bc/adt/programs/programs', `<program:abapProgram xmlns:program="http://www.sap.com/adt/programs/programs" ${core} ${common}>${pkgRef}</program:abapProgram>`],
       TABL: ['/sap/bc/adt/ddic/tables', blue('TABL/DT')],
       DDLS: ['/sap/bc/adt/ddic/ddl/sources', `<ddl:ddlSource xmlns:ddl="http://www.sap.com/adt/ddic/ddlsources" ${core} ${common}>${pkgRef}</ddl:ddlSource>`],
@@ -371,7 +497,8 @@ export class AdtClient {
     const links = await this.transportConfigurations();
     for (const uri of links) {
       const r = await this.req({ method: 'GET', path: uri, accept: CFG });
-      const xml = withConfigProperties(r.body, { User: user, WorkbenchRequests: 'true', Modifiable: 'true' });
+      // like SE09/SE10: workbench and customizing requests and transports of copies, open and released
+      const xml = withConfigProperties(r.body, { User: user, WorkbenchRequests: 'true', CustomizingRequests: 'true', TransportOfCopies: 'true', Modifiable: 'true', Released: 'true' });
       const etag = r.headers?.etag || r.headers?.ETag;
       if (xml !== r.body) {
         await this.req({ method: 'PUT', path: uri, accept: CFG, contentType: CFG, body: xml, headers: etag ? { 'If-Match': etag } : undefined }).catch(() => undefined);
@@ -661,6 +788,107 @@ export function addTransportEntries(xml: string, number: string, entries: string
   return xml.replace(all_, self ? `${open}${add}</${p}${el}>` : `${open}${add}`);
 }
 
+/** A link of an ADT document resolved against the document's URI. */
+export function followLink(base: string, href: string): string {
+  const h = href.replace(/^adt:\/\/[^/]+/, '');
+  if (/^\w+:\/\//.test(h)) return h.replace(/^\w+:\/\/[^/]+/, '');
+  if (h.startsWith('/')) return h;
+  return base.replace(/\/$/, '') + '/' + h.replace(/^\.\//, '');
+}
+
+const VERSIONS_REL = 'http://www.sap.com/adt/relations/versions';
+/** The versions link of an object or, for a class, of one of its includes. */
+export function versionsLink(body: string, uri: string, include: Include): string {
+  const root = parseXml(body).children[0];
+  if (!root) return '';
+  const pick = (el: XEl | undefined) => kids(el, 'link').find(l => attr(l, 'rel') === VERSIONS_REL);
+  const inc = all(root, 'include').find(i => (attr(i, 'includeType') || '') === include);
+  const link = pick(inc) || (include === 'main' || !inc ? pick(root) : undefined);
+  const href = attr(link, 'href');
+  return href ? followLink(uri, href) : '';
+}
+
+export function parseRevisions(body: string, base = ''): Revision[] {
+  return all(parseXml(body), 'entry').map(e => {
+    const src = attr(first(e, 'content'), 'src') || '';
+    const tr = kids(e, 'link').map(l => attr(l, 'name')).find(Boolean);
+    return {
+      uri: src ? followLink(base, src) : '', version: textOf(e, 'id').split('/').pop() || '',
+      title: textOf(kid(e, 'title')), author: textOf(first(e, 'author'), 'name'), date: textOf(kid(e, 'updated')), transport: tr || undefined,
+    };
+  }).filter(r => r.uri);
+}
+
+/** queryString of the default query variant of the runtime errors feed, as parameters. */
+export function dumpsDefaultQuery(body: string): Record<string, string> {
+  const entry = all(parseXml(body), 'entry').find(e => all(e, 'link').some(l => /\/runtime\/dumps\b/.test(attr(l, 'href') || '')));
+  const variants = all(entry, 'queryVariant');
+  const v = variants.find(x => attr(x, 'isDefault') === 'true') || variants[0];
+  const qs = (attr(v, 'queryString') || '').replace(/^\?/, '');
+  const out: Record<string, string> = {};
+  for (const pair of qs.split('&')) {
+    if (!pair) continue;
+    const eq = pair.indexOf('=');
+    const k = decodeURIComponent(eq < 0 ? pair : pair.slice(0, eq)), val = eq < 0 ? '' : decodeURIComponent(pair.slice(eq + 1));
+    out[k] = val;
+  }
+  return out;
+}
+
+/** Atom feed of runtime errors: the error and the program as categories, a link to where it stopped. */
+export function parseDumps(body: string): Dump[] {
+  return all(parseXml(body), 'entry').map(e => {
+    const cats = kids(e, 'category');
+    const cat = (re: RegExp) => attr(cats.find(c => re.test(attr(c, 'label') || '')), 'term') || '';
+    const id = textOf(kid(e, 'id'));
+    let where: Location | undefined;
+    for (const l of kids(e, 'link')) {
+      const href = (attr(l, 'href') || '').replace(/^adt:\/\/[^/]+/, '');
+      if (!/\/sap\/bc\/adt\/(?!runtime\/)/.test(href) || !/#|\/source\/|\/includes\//.test(href)) continue;
+      const s = parseStart(href); const src = splitSourceUrl(s.path);
+      where = { uri: src.uri, include: src.include, line: s.line };
+      break;
+    }
+    const summary = kid(e, 'summary');
+    const title = textOf(kid(e, 'title'));
+    return {
+      id, title, error: cat(/runtime error/i) || attr(cats[0], 'term') || title, program: cat(/program/i) || attr(cats[1], 'term') || '',
+      user: textOf(first(e, 'author'), 'name'), at: textOf(kid(e, 'updated')) || textOf(kid(e, 'published')), where,
+      html: summary && /html/i.test(attr(summary, 'type') || '') && summary.text.trim() ? summary.text : undefined,
+    };
+  }).filter(d => d.id);
+}
+
+const traceUri = (id: string) => id.startsWith('/sap/bc/adt/runtime/traces/abaptraces/') ? id : `/sap/bc/adt/runtime/traces/abaptraces/${encodeURIComponent(id)}`;
+
+/** Atom feed of the user's traces. */
+export function parseTraces(body: string): TraceRun[] {
+  return all(parseXml(body), 'entry').map(e => {
+    const ext = first(e, 'extendedData');
+    const n = (k: string) => { const v = textOf(ext, k); return v === '' ? undefined : +v; };
+    return {
+      id: textOf(e, 'id'), title: textOf(e, 'title'), at: textOf(e, 'published') || textOf(e, 'updated'),
+      objectName: textOf(ext, 'objectName') || undefined, runtime: n('runtime'), abap: n('runtimeABAP'), db: n('runtimeDatabase'), system: n('runtimeSystem'),
+    };
+  }).filter(t => t.id);
+}
+
+/** Hit list: one line per called unit with its gross and net time. */
+export function parseHitList(body: string): TraceHit[] {
+  return all(parseXml(body), 'entry').map(e => {
+    const gross = first(e, 'grossTime'), net = first(e, 'traceEventNetTime') || first(e, 'proceduralNetTime');
+    const caller = first(e, 'callingProgram');
+    const uri = attr(caller, 'uri');
+    let at: Location | undefined;
+    if (uri) { const s = parseStart(uri); const src = splitSourceUrl(s.path); at = { uri: src.uri, include: src.include, line: s.line }; }
+    return {
+      name: attr(e, 'description') || '', program: attr(first(e, 'calledProgram'), 'context') || attr(caller, 'context') || '',
+      hits: +(attr(e, 'hitCount') || 0), gross: +(attr(gross, 'time') || 0), net: +(attr(net, 'time') || 0),
+      grossPct: +(attr(gross, 'percentage') || 0), netPct: +(attr(net, 'percentage') || 0), at,
+    };
+  });
+}
+
 /** The request document with a new description on the request itself (not on its tasks); root as a fallback. */
 export function setTransportDesc(xml: string, id: string, desc: string): string | null {
   for (const el of ['request', 'root']) {
@@ -723,23 +951,30 @@ export function parseTransportTree(body: string): Transport[] {
   const out: Transport[] = [];
   // status of a request: from the folder it sits in, else from its own status attribute
   const own = (c: XEl): Transport['status'] => /^[RN]$/.test(attr(c, 'status') || '') ? 'released' : 'modifiable';
-  const walk = (el: XEl, status: Transport['status'] | null) => {
+  // request type: its own attribute when the system sends one, else the section it is listed in
+  const TYPES: Record<string, Transport['category']> = { K: 'workbench', S: 'workbench', W: 'customizing', Q: 'customizing', T: 'copies', C: 'copies' };
+  const walk = (el: XEl, status: Transport['status'] | null, cat: Transport['category']) => {
     for (const c of el.children) {
       let st = status;
+      let ca = cat;
       if (c.local === 'modifiable') st = 'modifiable';
       if (c.local === 'released' || c.local === 'relstarted') st = 'released';
+      if (c.local === 'workbench') ca = 'workbench';
+      if (c.local === 'customizing') ca = 'customizing';
+      if (c.local === 'transportofcopies' || c.local === 'copies') ca = 'copies';
       if (c.local === 'request') {
         st = st || own(c);
         const objects = new Set<string>();
         for (const o of all(c, 'abap_object')) objects.add(`${attr(o, 'pgmid') || 'R3TR'} ${attr(o, 'type')} ${attr(o, 'name')}`);
         const task = kids(c, 'task')[0];
-        out.push({ id: attr(c, 'number') || '', desc: attr(c, 'desc') || '', owner: attr(c, 'owner') || '', status: st, task: attr(task, 'number'), objects: [...objects] });
+        const kind = (attr(c, 'request_type') || attr(c, 'trfunction') || attr(c, 'type') || '').toUpperCase();
+        out.push({ id: attr(c, 'number') || '', desc: attr(c, 'desc') || '', owner: attr(c, 'owner') || '', status: st, task: attr(task, 'number'), objects: [...objects], category: TYPES[kind] || ca || 'workbench' });
         continue;
       }
-      walk(c, st);
+      walk(c, st, ca);
     }
   };
-  walk(parseXml(body), null);
+  walk(parseXml(body), null, undefined);
   return out;
 }
 

@@ -85,6 +85,17 @@ define service ${name} {
 `;
     case 'SRVB':
       return '';
+    case 'FUGR':
+      return `*******************************************************************
+*   System-defined Include-files.                                 *
+*******************************************************************
+  INCLUDE l${n}top.                 " Global Declarations
+  INCLUDE l${n}uxx.                 " Function Modules
+`;
+    case 'FUNC':
+      return `FUNCTION ${n}\n  IMPORTING\n    VALUE(iv_input) TYPE string OPTIONAL\n  EXPORTING\n    VALUE(ev_output) TYPE string.\n\n  ev_output = iv_input.\n\nENDFUNCTION.\n`;
+    case 'INCL':
+      return `*&---------------------------------------------------------------------*\n*& Include ${name}\n*&---------------------------------------------------------------------*\n`;
     default:
       return demoXml(type, name, desc, extra.pkg || '$TMP');
   }
@@ -164,6 +175,18 @@ export function demoSia6(name: string, desc: string, pkg: string, o: { appType?:
   const auth = o.table ? `<commonAuthorization:auth><commonAuthorization:authObject>S_TABU_NAM</commonAuthorization:authObject><commonAuthorization:status>U</commonAuthorization:status><commonAuthorization:text>Table Access by Generic Standard Tools</commonAuthorization:text><commonAuthorization:authItems><commonAuthorization:authItem><commonAuthorization:authObjectInstID>0001</commonAuthorization:authObjectInstID><commonAuthorization:authObject>S_TABU_NAM</commonAuthorization:authObject><commonAuthorization:ibsSource/><commonAuthorization:ibsSourceType/><commonAuthorization:text>Table Access by Generic Standard Tools</commonAuthorization:text><commonAuthorization:status>U</commonAuthorization:status><commonAuthorization:inactive>false</commonAuthorization:inactive><commonAuthorization:values><commonAuthorization:value><commonAuthorization:field>ACTVT</commonAuthorization:field><commonAuthorization:val>Display change documents,Display,Change</commonAuthorization:val><commonAuthorization:status>U</commonAuthorization:status><commonAuthorization:text>Activity</commonAuthorization:text><commonAuthorization:isActvt>true</commonAuthorization:isActvt><commonAuthorization:fieldValues><commonAuthorization:fieldValue><commonAuthorization:lowValue>08</commonAuthorization:lowValue><commonAuthorization:highValue/></commonAuthorization:fieldValue><commonAuthorization:fieldValue><commonAuthorization:lowValue>03</commonAuthorization:lowValue><commonAuthorization:highValue/></commonAuthorization:fieldValue><commonAuthorization:fieldValue><commonAuthorization:lowValue>02</commonAuthorization:lowValue><commonAuthorization:highValue/></commonAuthorization:fieldValue></commonAuthorization:fieldValues></commonAuthorization:value><commonAuthorization:value><commonAuthorization:field>TABLE</commonAuthorization:field><commonAuthorization:val>${xe(o.table)}</commonAuthorization:val><commonAuthorization:status>U</commonAuthorization:status><commonAuthorization:text>Table Name</commonAuthorization:text><commonAuthorization:isActvt>false</commonAuthorization:isActvt><commonAuthorization:fieldValues><commonAuthorization:fieldValue><commonAuthorization:lowValue>${xe(o.table)}</commonAuthorization:lowValue><commonAuthorization:highValue/></commonAuthorization:fieldValue></commonAuthorization:fieldValues></commonAuthorization:value></commonAuthorization:values></commonAuthorization:authItem></commonAuthorization:authItems></commonAuthorization:auth>` : '';
   const plug = (ui: string, invisible: boolean, inactive: boolean) => `<sia6:pluginConfig><sia6:uiObject>${ui}</sia6:uiObject><sia6:invisble>${invisible}</sia6:invisble><sia6:inactive>${inactive}</sia6:inactive></sia6:pluginConfig>`;
   return `<?xml version="1.0" encoding="utf-8"?><sia6:sia6 adtcore:responsible="DEVELOPER" adtcore:masterLanguage="EN" adtcore:masterSystem="S4D" adtcore:abapLanguageVersion="cloudDevelopment" adtcore:name="${xe(name.toUpperCase())}" adtcore:type="SIA6" adtcore:changedAt="2026-11-03T13:23:10Z" adtcore:createdAt="2026-11-03T13:08:22Z" adtcore:changedBy="DEVELOPER" adtcore:createdBy="DEVELOPER" adtcore:description="${xe(desc)}" adtcore:language="EN" xmlns:sia6="http://www.sap.com/iam/sia6" xmlns:adtcore="http://www.sap.com/adt/core"><adtcore:packageRef adtcore:uri="/sap/bc/adt/packages/${xe(pkg.toLowerCase())}" adtcore:type="DEVC/K" adtcore:name="${xe(pkg.toUpperCase())}"/><sia6:content><sia6:appID>${xe(name.toUpperCase())}</sia6:appID><sia6:appType>${xe(o.appType || 'EXT')}</sia6:appType><sia6:ui5AppId/><sia6:transactionCode/><sia6:scopeDependent>false</sia6:scopeDependent><sia6:providerClass/><sia6:secondaryID/><sia6:services>${svc}</sia6:services><commonAuthorization:auths xmlns:commonAuthorization="http://www.sap.com/aps/common/authorization">${auth}</commonAuthorization:auths><commonAuthorization:restrictions xmlns:commonAuthorization="http://www.sap.com/aps/common/authorization"/><sia6:appconfigs/><sia6:pluginConfigs>${plug('appconfig_tab', true, false)}${plug('auth_tab', false, false)}${plug('scope_checkbox', true, false)}${plug('type_selectbox', false, true)}${plug('ui_app_id', false, false)}${plug('ui_publishing_status', false, false)}${plug('ui_tcode', true, true)}</sia6:pluginConfigs><sia6:publishStatus>p</sia6:publishStatus><sia6:migrationStatus/><sia6:abapLanguageVersion>5</sia6:abapLanguageVersion></sia6:content></sia6:sia6>
+`;
+}
+
+/** A message class the way ADT returns it (one mc:messages element per message). */
+export function demoMsag(name: string, desc: string, pkg: string, messages: [string, string, boolean][]): string {
+  return `<?xml version="1.0" encoding="utf-8"?>
+<mc:messageClass xmlns:mc="http://www.sap.com/adt/MessageClass" xmlns:adtcore="http://www.sap.com/adt/core" xmlns:atom="http://www.w3.org/2005/Atom" adtcore:name="${xe(name)}" adtcore:type="MSAG/N" adtcore:description="${xe(desc)}" adtcore:language="EN" adtcore:masterLanguage="EN" adtcore:responsible="DEVELOPER" adtcore:changedBy="DEVELOPER" adtcore:changedAt="2026-11-03T09:12:44Z" adtcore:createdAt="2026-10-28T02:20:10Z">
+  <adtcore:packageRef adtcore:name="${xe(pkg)}" adtcore:type="DEVC/K"/>
+${messages.map(([no, text, self]) => `  <mc:messages mc:msgno="${no}" mc:msgtext="${xe(text)}" mc:selfexplainatory="${self}" mc:documented="${!self}">
+    <atom:link href="/sap/bc/adt/messageclass/${xe(name.toLowerCase())}/messages/${no}" rel="self"/>
+  </mc:messages>`).join('\n')}
+</mc:messageClass>
 `;
 }
 

@@ -119,3 +119,62 @@ test('transport object entries: remove some, move others, and say so when the sy
   srv.ignoreObjectEdits = true;
   await assert.rejects(b.removeFromTransport('npl', a, ['R3TR CLAS ZCL_A']), /does not accept changes to the object list/);
 });
+
+test('function groups, text elements of a program, and the profiler against an ADT server', async () => {
+  const srv = new FakeAdtServer();
+  srv.objs.push({ uri: '/sap/bc/adt/programs/programs/zr_demo', name: 'ZR_DEMO', type: 'PROG/P', pkg: 'ZDEMO', desc: 'Report', src: { main: 'REPORT zr_demo.\n' }, active: { main: 'REPORT zr_demo.\n' } });
+  srv.texts.ZR_DEMO = { symbols: '@MaxLength:20\n001=Hello\n' };
+  const b = new AdtBackend(srv, { list: async () => [conn], save: async () => undefined, remove: async () => undefined, resetSession: async () => undefined });
+  await b.connections();
+  const parts = await b.groupContents('npl', { uri: '/sap/bc/adt/functions/groups/zfg', name: 'ZFG', type: 'FUGR', pkg: 'ZDEMO', desc: '' });
+  assert.deepEqual(parts.map(p => [p.type, p.name, p.uri]), [['FUNC', 'Z_DEMO_FM', '/sap/bc/adt/functions/groups/zfg/fmodules/z_demo_fm'], ['INCL', 'LZFGTOP', '/sap/bc/adt/functions/groups/zfg/includes/lzfgtop']]);
+
+  const prog = { uri: '/sap/bc/adt/programs/programs/zr_demo', name: 'ZR_DEMO', type: 'PROG' as const, pkg: 'ZDEMO', desc: '' };
+  assert.deepEqual(b.includesOf('PROG'), ['main', 'symbols', 'selections', 'headings']);
+  assert.equal(await b.read('npl', prog, 'symbols', 'inactive'), '@MaxLength:20\n001=Hello\n');
+  assert.equal(await b.read('npl', prog, 'selections', 'inactive'), '', 'none yet');
+  await b.write('npl', prog, 'selections', 'P_CARR=Airline\n', 'ignored', 'NPLK900001');
+  assert.equal(srv.texts.ZR_DEMO.selections, 'P_CARR=Airline\n');
+  assert.equal((await b.state('npl', prog)).inactive, true, 'saved text elements wait for activation');
+  srv.log.length = 0;
+  await b.activate('npl', [prog]);
+  assert.ok(srv.log.includes('POST /sap/bc/adt/activation'));
+  assert.deepEqual(await b.syntaxCheck('npl', prog, 'symbols', '001=x'), []);
+
+  const runs = await b.traces('npl');
+  assert.deepEqual(runs.map(r => [r.objectName, r.runtime, r.db]), [['ZCL_DEMO', 12000, 9000]]);
+  const hits = await b.traceHitList('npl', runs[0].id);
+  assert.deepEqual(hits.map(h => [h.name, h.hits, h.net, h.at?.uri, h.at?.line]), [['Select ZTAB', 2, 9000, '/sap/bc/adt/oo/classes/zcl_demo', 2]]);
+  await b.traceRequest('npl', 'test');
+  assert.deepEqual(srv.traceRequests, ['DEV|/sap/bc/adt/runtime/traces/abaptraces/processtypes/any|/sap/bc/adt/runtime/traces/abaptraces/parameters/P1']);
+
+});
+
+test('runtime errors, version history and function module creation against an ADT server', async () => {
+  const srv = new FakeAdtServer();
+  const b = new AdtBackend(srv, { list: async () => [conn], save: async () => undefined, remove: async () => undefined, resetSession: async () => undefined });
+  await b.connections();
+  await b.connect('npl');
+  const dumps = await b.dumps('npl');
+  assert.equal(srv.bodies.dumpsQuery, JSON.stringify({ $query: 'and(equals(user,DEV))' }), 'the default query of the feed list');
+  assert.equal(dumps[0].error, 'ITAB_LINE_NOT_FOUND');
+  assert.deepEqual(dumps[0].where, { uri: '/sap/bc/adt/oo/classes/zcl_demo', include: 'main', line: 2 });
+  assert.match((await b.dumpDetail('npl', dumps[0])).text || '', /line not found/);
+
+  const [obj] = await b.packageObjects('npl', 'ZDEMO');
+  const revs = await b.revisions('npl', obj, 'main');
+  assert.equal(revs.length, 1);
+  assert.equal(revs[0].transport, 'NPLK900001');
+  assert.equal(await b.revisionSource('npl', revs[0]), 'OLD SOURCE');
+  assert.ok(srv.log.includes('GET /sap/bc/adt/oo/classes/zcl_demo/source/main/versions'), 'the versions link of the object');
+
+  const g = await b.createObject('npl', 'FUGR', 'ZDEMO_FG', 'Demo group', 'ZDEMO');
+  assert.equal(g.uri, '/sap/bc/adt/functions/groups/zdemo_fg');
+  assert.match(srv.bodies.fugr, /<group:abapFunctionGroup [^>]*adtcore:type="FUGR\/F"/);
+  assert.match(srv.bodies.fugr, /<adtcore:packageRef adtcore:name="ZDEMO"\/>/);
+  const f = await b.createObject('npl', 'FUNC', 'Z_DEMO_NEW', 'Demo FM', 'ZDEMO', undefined, { functionGroup: 'zdemo_fg' });
+  assert.equal(f.uri, '/sap/bc/adt/functions/groups/zdemo_fg/fmodules/z_demo_new');
+  assert.match(srv.bodies.func, /<fmodule:abapFunctionModule [^>]*adtcore:type="FUGR\/FF"/);
+  assert.match(srv.bodies.func, /<adtcore:containerRef adtcore:name="ZDEMO_FG" adtcore:type="FUGR\/F" adtcore:uri="\/sap\/bc\/adt\/functions\/groups\/zdemo_fg"\/>/);
+  await assert.rejects(b.createObject('npl', 'FUNC', 'Z_DEMO_X', 'x', 'ZDEMO', undefined, { functionGroup: 'znope' }), /does not exist/);
+});

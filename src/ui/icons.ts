@@ -58,6 +58,9 @@ const T: Record<string, string> = {
   CLAS: '<path d="M12 3 20 7.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5 12 12l8-4.5M12 12v9"/>',
   INTF: '<circle cx="7" cy="12" r="3.5"/><path d="M10.5 12h10M17 8v8"/>',
   PROG: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="m7.5 9.5 3 2.5-3 2.5M12.5 15h4"/>',
+  INCL: '<path d="M6 3.5h8l4 4v13H6z"/><path d="M14 3.5v4h4M9 12.5h6M9 16h4"/>',
+  FUGR: '<path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/><path d="M10 12.5h1.5a1.5 1.5 0 0 1 0 3M13 11v6"/>',
+  FUNC: '<path d="M14.5 4.5h-1a2.5 2.5 0 0 0-2.5 2.5v10a2.5 2.5 0 0 1-2.5 2.5h-1M8 11.5h6"/>',
   TABL: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M3.5 14.5h17M9.5 9.5v10"/>',
   DDLS: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/>',
   DDLX: '<circle cx="12" cy="12" r="3.2"/><path d="M15.2 12v1.6a2.3 2.3 0 0 0 4.6 0V12a7.8 7.8 0 1 0-3 6.1"/>',
@@ -97,4 +100,3 @@ const T: Record<string, string> = {
   DATA: '<rect x="3.5" y="4.5" width="17" height="15" rx="1.5"/><path d="M3.5 9.5h17M3.5 14.5h17M9.5 9.5v10M15.5 9.5v10"/>',
 };
 export const typeIcon = (type: string) => `<svg viewBox="0 0 24 24" aria-hidden="true">${T[type] || T.XOBJ}</svg>`;
-export const TYPE_ICON_NAMES = Object.keys(T);

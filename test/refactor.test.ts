@@ -140,3 +140,15 @@ test('transport documents: object entries come out and go in under the task', ()
   assert.equal(added, '<tm:root xmlns:tm="t"><tm:request tm:number="NPLK900009"><tm:task tm:number="NPLK900010"><tm:abap_object tm:pgmid="R3TR" tm:type="CLAS" tm:name="ZCL_A"/><tm:abap_object tm:pgmid="R3TR" tm:type="CLAS" tm:name="ZCL_A"/></tm:task></tm:request></tm:root>'.replace(/<tm:abap_object[^>]*\/>(?=<tm:abap_object)/, ''));
   assert.equal(addTransportEntries(empty, 'NPLK999999', ['R3TR CLAS ZCL_A']), null);
 });
+
+import { parseTransportTree as ptt } from '../src/adt/client';
+test('transport tree: workbench, customizing and copies like SE09/SE10', () => {
+  const tree = `<tm:root xmlns:tm="t"><tm:workbench><tm:target><tm:modifiable><tm:request tm:number="A1" tm:desc="wb"/><tm:request tm:number="A3" tm:desc="toc" tm:type="T"/></tm:modifiable></tm:target></tm:workbench><tm:customizing><tm:target><tm:released><tm:request tm:number="A2" tm:desc="cust"/></tm:released></tm:target></tm:customizing></tm:root>`;
+  assert.deepEqual(ptt(tree).map(t => [t.id, t.category, t.status]), [['A1', 'workbench', 'modifiable'], ['A3', 'copies', 'modifiable'], ['A2', 'customizing', 'released']]);
+});
+
+import { pkgMatches, adtTypeOf } from '../src/core/types';
+test('package filter and function group object types', () => {
+  assert.ok(pkgMatches('ZNUSA*', 'ZNUSA_FLIGHT') && pkgMatches('', 'X') && !pkgMatches('ZNUSA', 'ZNUSA_FLIGHT') && pkgMatches('znusa_flight', 'ZNUSA_FLIGHT'));
+  assert.deepEqual(['FUGR/F', 'FUGR/FF', 'FUGR/I', 'PROG/I'].map(adtTypeOf), ['FUGR', 'FUNC', 'INCL', 'INCL']);
+});

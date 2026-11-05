@@ -188,6 +188,56 @@ fn not_found(dir: &str) -> String {
     format!("The SAP NW RFC SDK was not found in \"{dir}\" (it contains: {}). Choose the folder that contains lib\\{LIB_NAME}, from SAP NW RFC SDK 7.50 for {platform}.", if seen.is_empty() { "nothing".to_string() } else { seen.join(", ") })
 }
 
+/// The SDK folder (the one holding lib) the user picked, or why it is not usable.
+pub fn check(dir: &str) -> Result<String, String> {
+    find_library(dir)
+        .map(|p| p.display().to_string())
+        .ok_or_else(|| not_found(dir))
+}
+
+/// Looks in the places people usually extract the SDK to; returns the SDK folder.
+pub fn detect() -> Option<String> {
+    let mut places: Vec<PathBuf> = vec![];
+    if cfg!(windows) {
+        for d in [
+            "C:\\SAP\\nwrfcsdk",
+            "C:\\nwrfcsdk",
+            "C:\\Program Files\\SAP\\nwrfcsdk",
+            "D:\\SAP\\nwrfcsdk",
+            "C:\\SAP",
+        ] {
+            places.push(PathBuf::from(d));
+        }
+    } else {
+        places.push(PathBuf::from("/usr/sap/nwrfcsdk"));
+        places.push(PathBuf::from("/usr/local/sap/nwrfcsdk"));
+    }
+    if let Some(home) = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }) {
+        let home = PathBuf::from(home);
+        places.push(home.join("nwrfcsdk"));
+        places.push(home.join("Downloads"));
+        places.push(home.join("Documents"));
+        places.push(home.join("Desktop"));
+    }
+    for p in places {
+        if let Some(lib) = find_library(&p.to_string_lossy()) {
+            // the SDK folder is the one that holds lib
+            let dir = lib.parent().unwrap_or(p.as_path());
+            let root = if dir
+                .file_name()
+                .map(|n| n.eq_ignore_ascii_case("lib"))
+                .unwrap_or(false)
+            {
+                dir.parent().unwrap_or(dir)
+            } else {
+                dir
+            };
+            return Some(root.display().to_string());
+        }
+    }
+    None
+}
+
 static LOADED: Mutex<Option<(PathBuf, Arc<Sdk>)>> = Mutex::new(None);
 
 pub fn load(dir: &str) -> Result<Arc<Sdk>, String> {

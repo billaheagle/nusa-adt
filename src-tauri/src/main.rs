@@ -5,6 +5,7 @@
 mod connections;
 mod oauth;
 mod rfc;
+mod sapgui;
 mod session;
 mod update;
 
@@ -95,9 +96,46 @@ async fn adt_request(
     sess.request(req, &app).await
 }
 
+/// Native folder picker (the RFC SDK folder).
+#[tauri::command]
+async fn pick_folder(
+    app: tauri::AppHandle,
+    start: Option<String>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Choose the SAP NW RFC SDK folder");
+    if let Some(s) = start.filter(|s| std::path::Path::new(s).is_dir()) {
+        dialog = dialog.set_directory(s);
+    }
+    // a blocking dialog is fine here: async commands do not run on the main thread
+    Ok(dialog
+        .blocking_pick_folder()
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.display().to_string()))
+}
+
+#[tauri::command]
+fn set_logon_auto_open(on: bool) {
+    oauth::set_auto_open(on);
+}
+
+#[tauri::command]
+fn rfc_sdk_check(dir: String) -> Result<String, String> {
+    rfc::check(&dir)
+}
+
+#[tauri::command]
+fn rfc_sdk_detect() -> Option<String> {
+    rfc::detect()
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .setup(|app| {
             // In-app updates need the public key the release workflow writes into the config
@@ -127,7 +165,12 @@ fn main() {
             reset_session,
             adt_request,
             update::check_update,
-            update::install_update
+            update::install_update,
+            pick_folder,
+            set_logon_auto_open,
+            rfc_sdk_check,
+            rfc_sdk_detect,
+            sapgui::open_sap_gui
         ])
         .run(tauri::generate_context!())
         .expect("error while running Nusa Studio");

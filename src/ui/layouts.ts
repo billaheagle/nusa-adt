@@ -33,7 +33,9 @@ export interface TableDef {
 }
 /** Authorizations of IAM apps and similar objects (commonAuthorization:auths). */
 export interface AuthsDef { kind: 'auths' }
-export interface SectionDef { title: string; help?: string; half?: boolean; fields?: FieldDef[]; block?: LabelRowsDef | TableDef | AuthsDef }
+/** Messages of a message class, one row per message like SE91. */
+export interface MessagesDef { kind: 'messages' }
+export interface SectionDef { title: string; help?: string; half?: boolean; fields?: FieldDef[]; block?: LabelRowsDef | TableDef | AuthsDef | MessagesDef }
 export interface Layout {
   sections: SectionDef[];
   /** elements that are settings for the editor itself, not properties to show */
@@ -74,6 +76,11 @@ const shown = (ui: string) => (g: Get) => g(`plugin:${ui}:invisble`) !== 'true';
 const locked = (ui: string) => (g: Get) => g(`plugin:${ui}:inactive`) === 'true';
 
 export const LAYOUTS: Partial<Record<ObjType, Layout>> = {
+  MSAG: {
+    sections: [
+      { title: 'Messages', help: 'Like SE91: three-digit numbers, at most 73 characters. &1 to &4 are filled from the MESSAGE statement (WITH …); a message that is not self-explanatory gets a long text in SE91.', block: { kind: 'messages' } },
+    ],
+  },
   SIA6: {
     hide: ['pluginConfigs', 'migrationStatus', 'abapLanguageVersion', 'restrictions', 'appconfigs'],
     sections: [

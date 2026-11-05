@@ -53,6 +53,11 @@ jobs:
       # same and the app only points to new releases.
       UPDATER_READY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' && secrets.TAURI_UPDATER_PUBKEY != '' }}
       NUSA_REPO: ${{ github.repository }}
+      # Code signing (see README, "Code signing"). Each platform is signed only when its secrets exist;
+      # without them the build is the same as before, unsigned.
+      WIN_SIGN: ${{ secrets.WINDOWS_CERTIFICATE != '' && secrets.WINDOWS_CERTIFICATE_PASSWORD != '' }}
+      MAC_SIGN: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_SIGNING_IDENTITY != '' }}
+      MAC_NOTARIZE: ${{ secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -102,6 +107,58 @@ jobs:
             console.log("updater on for", process.env.NUSA_REPO);
           '
 
+      # Windows: the PFX goes into the user certificate store; Tauri signs with its thumbprint.
+      - name: Windows code signing certificate
+        if: matrix.platform == 'windows-latest' && env.WIN_SIGN == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'nusa-sign.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String(($env:WINDOWS_CERTIFICATE -replace '\s', '')))
+          $pw = ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -Force -AsPlainText
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pw |
+            Where-Object { $_.HasPrivateKey } | Select-Object -First 1
+          if (-not $cert) { throw 'The PFX in WINDOWS_CERTIFICATE has no certificate with a private key' }
+          Remove-Item $pfx
+          $env:SIGN_THUMBPRINT = $cert.Thumbprint
+          $js = Join-Path $env:RUNNER_TEMP 'sign-config.cjs'
+          @'
+          const fs = require("fs"), f = "src-tauri/tauri.conf.json";
+          const c = JSON.parse(fs.readFileSync(f, "utf8"));
+          c.bundle.windows = { ...(c.bundle.windows || {}), certificateThumbprint: process.env.SIGN_THUMBPRINT,
+            digestAlgorithm: "sha256", timestampUrl: "http://timestamp.digicert.com" };
+          fs.writeFileSync(f, JSON.stringify(c, null, 2));
+          '@ | Set-Content $js
+          node $js
+          "SIGN_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
+          Write-Host "Windows signing with certificate $($cert.Subject)"
+
+      # macOS: Tauri imports the certificate, signs, and notarizes when the Apple ID secrets exist too.
+      # The variables are only set when the secrets exist, an empty value would make the build try to sign.
+      - name: macOS signing and notarization settings
+        if: matrix.platform == 'macos-latest' && env.MAC_SIGN == 'true'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          put() { { echo "$1<<NUSA_EOF"; printf '%s\n' "$2"; echo "NUSA_EOF"; } >> "$GITHUB_ENV"; }
+          put APPLE_CERTIFICATE "$(printf '%s' "$APPLE_CERTIFICATE" | tr -d '\n\r ')"
+          put APPLE_CERTIFICATE_PASSWORD "$APPLE_CERTIFICATE_PASSWORD"
+          put APPLE_SIGNING_IDENTITY "$APPLE_SIGNING_IDENTITY"
+          if [ "$MAC_NOTARIZE" = "true" ]; then
+            put APPLE_ID "$APPLE_ID"; put APPLE_PASSWORD "$APPLE_PASSWORD"; put APPLE_TEAM_ID "$APPLE_TEAM_ID"
+            echo "macOS: signing and notarization on"
+          else
+            echo "macOS: signing on, notarization off (APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID not set)"
+          fi
+
       - uses: tauri-apps/tauri-action@v0
         id: tauri
         env:
@@ -114,8 +171,8 @@ jobs:
           releaseBody: |
             Installers for Windows (.msi / -setup.exe), macOS (.dmg) and Linux (.deb).
             Portable, no install needed: Windows *-portable-x64.exe, macOS *-portable-macos.zip, Linux *-portable-x86_64.AppImage.
-            The builds are not code-signed yet: Windows shows SmartScreen ("More info" → "Run anyway"),
-            macOS needs right-click → Open the first time.
+            Builds made without code-signing certificates show a warning the first time: Windows SmartScreen
+            ("More info" → "Run anyway"), macOS right-click → Open.
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: ${{ env.UPDATER_READY == 'true' }}
@@ -129,7 +186,12 @@ jobs:
           mkdir -p portable
           case "${{ runner.os }}" in
             Windows)
-              cp src-tauri/target/release/nusa-adt.exe "portable/Nusa-Studio-${VERSION}-portable-x64.exe" ;;
+              cp src-tauri/target/release/nusa-adt.exe "portable/Nusa-Studio-${VERSION}-portable-x64.exe"
+              if [ -n "$SIGN_THUMBPRINT" ]; then
+                # the portable exe is signed with the same certificate as the installers
+                signtool=$(ls -d "/c/Program Files (x86)/Windows Kits/10/bin/"*/x64/signtool.exe | sort -V | tail -1)
+                "$signtool" sign //sha1 "$SIGN_THUMBPRINT" //fd sha256 //tr http://timestamp.digicert.com //td sha256 "portable/Nusa-Studio-${VERSION}-portable-x64.exe"
+              fi ;;
             macOS)
               ditto -c -k --keepParent "src-tauri/target/universal-apple-darwin/release/bundle/macos/Nusa Studio.app" \
                 "portable/Nusa-Studio-${VERSION}-portable-macos.zip" ;;
